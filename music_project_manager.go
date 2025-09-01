@@ -486,10 +486,6 @@ func (m *musicProjectManagerTool) IsInitialized() bool {
 	return globalSettings.IsInitialized()
 }
 
-// Version returns the plugin version.
-func (m *musicProjectManagerTool) Version() string {
-	return "1.0.0"
-}
 
 // SetAgentContext provides the current agent information to the plugin
 func (m *musicProjectManagerTool) SetAgentContext(ctx AgentContext) {
