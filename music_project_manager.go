@@ -63,6 +63,14 @@ type musicProjectManagerTool struct {
 	agentContext *AgentContext
 }
 
+func (m *musicProjectManagerTool) Version() string {
+	versionBytes, err := os.ReadFile("VERSION")
+	if err != nil {
+		return "0.0.1"
+	}
+	return strings.TrimSpace(string(versionBytes))
+}
+
 // Definition returns the OpenAI function definition for music project management operations.
 func (m *musicProjectManagerTool) Definition() openai.FunctionDefinitionParam {
 	return openai.FunctionDefinitionParam{
@@ -171,7 +179,7 @@ func (m *musicProjectManagerTool) handleCreateProject(name string, bpm int) (str
 	// Get required settings
 	projectDirInterface, hasProjectDir := agentSettings["project_dir"]
 	templateDirInterface, hasTemplateDir := agentSettings["template_dir"]
-	
+
 	if !hasProjectDir || !hasTemplateDir {
 		return "Music Project Manager needs to be set up first. Please configure project_dir and template_dir using 'set_project_dir' and 'set_template_dir' operations.", nil
 	}
@@ -349,7 +357,7 @@ func (m *musicProjectManagerTool) handleGetSettings() (string, error) {
 func getSuggestedDirectories() (projectDir, templateDir string) {
 	// Use ~ for cross-platform home directory
 	projectDir = "~/Music/Projects"
-	
+
 	// Detect platform for REAPER template directory
 	if runtime.GOOS == "darwin" {
 		// macOS - use standard REAPER application support directory
@@ -361,7 +369,7 @@ func getSuggestedDirectories() (projectDir, templateDir string) {
 		// Linux/other - use generic location
 		templateDir = "~/Music/Templates"
 	}
-	
+
 	return projectDir, templateDir
 }
 
