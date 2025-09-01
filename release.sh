@@ -58,14 +58,20 @@ fi
 if git rev-parse "$TAG" >/dev/null 2>&1; then
   echo -e "${YELLOW}⚠ Tag $TAG already exists. Deleting existing tag and release...${NC}"
   git tag -d "$TAG" || true
-  git push origin ":refs/tags/$TAG" || true
+  if git remote get-url origin >/dev/null 2>&1; then
+    git push origin ":refs/tags/$TAG" || true
+  fi
   gh release delete "$TAG" --yes || true
 fi
 
 # Create git tag
 echo -e "${YELLOW}Creating git tag $TAG...${NC}"
 git tag "$TAG"
-git push origin "$TAG"
+if git remote get-url origin >/dev/null 2>&1; then
+  git push origin "$TAG"
+else
+  echo -e "${YELLOW}⚠ No origin remote found, skipping git push${NC}"
+fi
 
 # Create GitHub release with the .so file
 echo -e "${YELLOW}Creating GitHub release...${NC}"
