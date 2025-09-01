@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Release script for dolphin-reaper plugin
+# Release script for music-project-manager plugin
 # Creates a GitHub release with the built .so file
 
 set -e # Exit on any error
@@ -16,7 +16,7 @@ BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 PLUGIN_NAME="music-project-manager"
-OUTPUT_NAME="music-project-manager.so"
+OUTPUT_NAME="music_project_manager.so"
 
 # Read version from VERSION file
 if [ ! -f "VERSION" ]; then
@@ -27,7 +27,7 @@ fi
 VERSION=$(cat VERSION | tr -d '\n\r')
 TAG="v$VERSION"
 
-echo -e "${BLUE}Creating release for dolphin-reaper $TAG...${NC}"
+echo -e "${BLUE}Creating release for music-project-manager $TAG...${NC}"
 
 # Check if we're in a git repository
 if ! git rev-parse --git-dir >/dev/null 2>&1; then
@@ -71,10 +71,10 @@ git push origin "$TAG"
 echo -e "${YELLOW}Creating GitHub release...${NC}"
 gh release create "$TAG" \
   --title "Release $TAG" \
-  --notes "Release $TAG of dolphin-reaper REAPER script launcher plugin
+  --notes "Release $TAG of music-project-manager plugin
 
 ## Installation
-Download the \`$OUTPUT_NAME\` file and place it in your dolphin-agent plugins directory.
+Download the \`$OUTPUT_NAME\` file and place it in your plugins directory.
 
 ## Changes
 - Version $VERSION release" \
@@ -82,4 +82,4 @@ Download the \`$OUTPUT_NAME\` file and place it in your dolphin-agent plugins di
 
 echo -e "${GREEN}🎉 Release $TAG created successfully!${NC}"
 echo -e "${BLUE}Plugin file $OUTPUT_NAME has been uploaded to the release.${NC}"
-echo -e "${BLUE}Users can download it from: https://github.com/johnjallday/dolphin-reaper/releases/tag/$TAG${NC}"
+echo -e "${BLUE}Users can download it from: https://github.com/johnjallday/dolphin-music-project-manager/releases/tag/$TAG${NC}"
