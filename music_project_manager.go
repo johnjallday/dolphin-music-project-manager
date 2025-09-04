@@ -254,10 +254,6 @@ func (m *musicProjectManagerTool) handleCreateProject(name string, bpm int) (str
 
 // handleSetProjectDir sets the project directory
 func (m *musicProjectManagerTool) handleSetProjectDir(path string) (string, error) {
-	if err := os.MkdirAll(path, 0755); err != nil {
-		return "", fmt.Errorf("failed to create directory %s: %w", path, err)
-	}
-
 	settings := globalSettings.getCurrentSettings()
 	settings.ProjectDir = path
 	globalSettings.settings = settings
