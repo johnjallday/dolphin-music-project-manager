@@ -4,8 +4,8 @@
 
 echo "Building music_project_manager plugin..."
 
-# Build the plugin
-go build -buildmode=plugin -o music_project_manager.so music_project_manager.go
+# Build the plugin (include all files in the package)
+go build -buildmode=plugin -o music_project_manager.so .
 
 if [ $? -eq 0 ]; then
     echo "✓ Successfully built music_project_manager.so"

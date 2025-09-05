@@ -4,7 +4,9 @@
       "Bash(git push:*)",
       "Bash(git pull:*)",
       "Bash(git remote add:*)",
-      "Bash(go build:*)"
+      "Bash(go build:*)",
+      "Bash(chmod:*)",
+      "Bash(./build.sh)"
     ],
     "deny": [],
     "ask": []
