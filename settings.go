@@ -8,6 +8,7 @@ import (
 	"runtime"
 
 	"github.com/johnjallday/music_project_manager/common"
+	"github.com/johnjallday/dolphin-agent/pluginapi"
 )
 
 // SettingsManager manages plugin settings
@@ -33,6 +34,77 @@ func (sm *SettingsManager) SetSettings(settingsJSON string) error {
 		return fmt.Errorf("failed to unmarshal settings: %w", err)
 	}
 	sm.settings = &settings
+	return nil
+}
+
+// UpdateSettings updates both in-memory settings and persists to agent_settings.json
+func (sm *SettingsManager) UpdateSettings(projectDir, templateDir string, initialized bool, agentContext *pluginapi.AgentContext) error {
+	if sm.settings == nil {
+		sm.settings = sm.getDefaultSettings()
+	}
+	
+	// Update in-memory settings
+	if projectDir != "" {
+		sm.settings.ProjectDir = projectDir
+	}
+	if templateDir != "" {
+		sm.settings.TemplateDir = templateDir
+		sm.settings.DefaultTemplate = filepath.Join(templateDir, "default.RPP")
+	}
+	sm.settings.Initialized = initialized
+	
+	// If we have agent context, also persist to agent_settings.json
+	if agentContext != nil {
+		return sm.persistToAgentSettings(projectDir, templateDir, agentContext)
+	}
+	
+	return nil
+}
+
+// persistToAgentSettings saves the current settings to the agent's settings file
+func (sm *SettingsManager) persistToAgentSettings(projectDir, templateDir string, agentContext *pluginapi.AgentContext) error {
+	settingsFilePath := agentContext.SettingsPath
+
+	var agentSettings map[string]interface{}
+	if settingsData, err := os.ReadFile(settingsFilePath); err == nil {
+		if err := json.Unmarshal(settingsData, &agentSettings); err != nil {
+			return fmt.Errorf("failed to parse agent settings at %s: %w", settingsFilePath, err)
+		}
+	} else {
+		agentSettings = make(map[string]interface{})
+	}
+
+	if _, exists := agentSettings["music_project_manager"]; !exists {
+		agentSettings["music_project_manager"] = make(map[string]interface{})
+	}
+
+	musicSettings := agentSettings["music_project_manager"].(map[string]interface{})
+
+	if projectDir != "" {
+		musicSettings["project_dir"] = projectDir
+		musicSettings["path"] = filepath.Dir(projectDir)
+	}
+
+	if templateDir != "" {
+		musicSettings["template_dir"] = templateDir
+		musicSettings["default_template"] = filepath.Join(templateDir, "default.RPP")
+	}
+	
+	musicSettings["initialized"] = sm.settings.Initialized
+
+	if err := os.MkdirAll(filepath.Dir(settingsFilePath), 0755); err != nil {
+		return fmt.Errorf("failed to create agent directory: %w", err)
+	}
+
+	updatedData, err := json.MarshalIndent(agentSettings, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal updated agent settings: %w", err)
+	}
+
+	if err := os.WriteFile(settingsFilePath, updatedData, 0644); err != nil {
+		return fmt.Errorf("failed to write to %s: %w", settingsFilePath, err)
+	}
+
 	return nil
 }
 

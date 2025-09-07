@@ -5,17 +5,19 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
 
 	"github.com/johnjallday/music_project_manager/common"
+	"github.com/johnjallday/dolphin-agent/pluginapi"
 )
 
 // ProjectHandler handles music project operations
 type ProjectHandler struct {
-	agentContext *common.AgentContext
+	agentContext *pluginapi.AgentContext
 	settings     SettingsManager
 }
 
@@ -26,7 +28,7 @@ type SettingsManager interface {
 }
 
 // NewProjectHandler creates a new project handler
-func NewProjectHandler(agentContext *common.AgentContext, settings SettingsManager) *ProjectHandler {
+func NewProjectHandler(agentContext *pluginapi.AgentContext, settings SettingsManager) *ProjectHandler {
 	return &ProjectHandler{
 		agentContext: agentContext,
 		settings:     settings,
@@ -63,7 +65,7 @@ func (h *ProjectHandler) CreateProject(name string, bpm int) (string, error) {
 
 	defaultTemplate := filepath.Join(templateDir, "default.RPP")
 	projectDir := filepath.Join(projectDirBase, name)
-	
+
 	if err := os.MkdirAll(projectDir, 0755); err != nil {
 		return "", fmt.Errorf("failed to create project directory %q: %w", projectDir, err)
 	}
@@ -76,7 +78,7 @@ func (h *ProjectHandler) CreateProject(name string, bpm int) (string, error) {
 		}
 		return "", fmt.Errorf("failed to read template file %q: %w", defaultTemplate, err)
 	}
-	
+
 	if err := os.WriteFile(dest, data, 0644); err != nil {
 		return "", fmt.Errorf("failed to write project file: %w", err)
 	}
@@ -117,7 +119,21 @@ func (h *ProjectHandler) GetSettings() (string, error) {
 			return "", fmt.Errorf("failed to parse agent settings at %s: %w", settingsFilePath, err)
 		}
 	} else {
-		return "", fmt.Errorf("failed to read agent settings file at %s: %w", settingsFilePath, err)
+		// If settings file doesn't exist, return empty/default settings instead of error
+		formattedSettings := map[string]interface{}{
+			"project_dir":      nil,
+			"template_dir":     nil,
+			"path":             nil,
+			"initialized":      false,
+			"default_template": nil,
+			"status":           "Not configured - run setup to initialize",
+		}
+
+		data, err := json.MarshalIndent(formattedSettings, "", "  ")
+		if err != nil {
+			return "", fmt.Errorf("failed to marshal default settings: %w", err)
+		}
+		return string(data), nil
 	}
 
 	var musicSettings map[string]interface{}
@@ -147,34 +163,41 @@ func (h *ProjectHandler) GetSettings() (string, error) {
 
 // SetProjectDir sets the project directory
 func (h *ProjectHandler) SetProjectDir(path string) (string, error) {
-	settings := h.settings.GetCurrentSettings()
-	settings.ProjectDir = path
-
-	// Update agent settings to persist the setting
-	if err := h.updateAgentSettings(path, ""); err != nil {
-		return fmt.Sprintf("Project directory set to: %s\n⚠️  Could not persist to agent settings: %v\n\nPlease check that the agents directory is writable and the plugin has access to it.", path, err), nil
+	// Expand tilde before setting
+	expandedPath, err := expandTilde(path)
+	if err != nil {
+		return "", fmt.Errorf("failed to expand home directory in path %q: %w", path, err)
 	}
 
-	return fmt.Sprintf("✅ Project directory set to: %s\n✅ Successfully persisted to agent settings", path), nil
+	settings := h.settings.GetCurrentSettings()
+	settings.ProjectDir = expandedPath
+
+	// Note: Persistence is handled by the main tool's SettingsManager.UpdateSettings()
+	// We don't need to duplicate persistence here
+	return fmt.Sprintf("✅ Project directory set to: %s", expandedPath), nil
 }
 
 // SetTemplateDir sets the template directory
 func (h *ProjectHandler) SetTemplateDir(path string) (string, error) {
-	if err := os.MkdirAll(path, 0755); err != nil {
-		return "", fmt.Errorf("failed to create directory %s: %w", path, err)
+	// Expand tilde before setting
+	expandedPath, err := expandTilde(path)
+	if err != nil {
+		return "", fmt.Errorf("failed to expand home directory in path %q: %w", path, err)
+	}
+
+	if err := os.MkdirAll(expandedPath, 0755); err != nil {
+		return "", fmt.Errorf("failed to create directory %s: %w", expandedPath, err)
 	}
 
 	settings := h.settings.GetCurrentSettings()
-	settings.TemplateDir = path
+	settings.TemplateDir = expandedPath
 	if settings.DefaultTemplate != "" {
-		settings.DefaultTemplate = filepath.Join(path, "default.RPP")
+		settings.DefaultTemplate = filepath.Join(expandedPath, "default.RPP")
 	}
 
-	if err := h.updateAgentSettings("", path); err != nil {
-		return fmt.Sprintf("Template directory set to: %s\n⚠️  Could not persist to agent settings: %v\n\nPlease check that the agents directory is writable and the plugin has access to it.", path, err), nil
-	}
-
-	return fmt.Sprintf("✅ Template directory set to: %s\n✅ Successfully persisted to agent settings", path), nil
+	// Note: Persistence is handled by the main tool's SettingsManager.UpdateSettings()
+	// We don't need to duplicate persistence here
+	return fmt.Sprintf("✅ Template directory set to: %s", expandedPath), nil
 }
 
 // InitSetup checks setup status and provides guidance
@@ -202,38 +225,42 @@ func (h *ProjectHandler) InitSetup() (string, error) {
 
 // CompleteSetup completes initial setup
 func (h *ProjectHandler) CompleteSetup(projectDir, templateDir string) (string, error) {
-	if err := os.MkdirAll(projectDir, 0755); err != nil {
-		return "", fmt.Errorf("failed to create project directory %s: %w", projectDir, err)
+	// Expand tilde in both paths
+	expandedProjectDir, err := expandTilde(projectDir)
+	if err != nil {
+		return "", fmt.Errorf("failed to expand home directory in project path %q: %w", projectDir, err)
 	}
-	if err := os.MkdirAll(templateDir, 0755); err != nil {
-		return "", fmt.Errorf("failed to create template directory %s: %w", templateDir, err)
+	
+	expandedTemplateDir, err := expandTilde(templateDir)
+	if err != nil {
+		return "", fmt.Errorf("failed to expand home directory in template path %q: %w", templateDir, err)
+	}
+
+	if err := os.MkdirAll(expandedProjectDir, 0755); err != nil {
+		return "", fmt.Errorf("failed to create project directory %s: %w", expandedProjectDir, err)
+	}
+	if err := os.MkdirAll(expandedTemplateDir, 0755); err != nil {
+		return "", fmt.Errorf("failed to create template directory %s: %w", expandedTemplateDir, err)
 	}
 
 	settings := &common.Settings{
-		ProjectDir:      projectDir,
-		TemplateDir:     templateDir,
-		DefaultTemplate: filepath.Join(templateDir, "default.RPP"),
+		ProjectDir:      expandedProjectDir,
+		TemplateDir:     expandedTemplateDir,
+		DefaultTemplate: filepath.Join(expandedTemplateDir, "default.RPP"),
 		Initialized:     true,
 	}
 
-	// Note: We can't directly modify the settings through the interface
-	// This would need to be handled differently in a real implementation
-	
-	persistMessage := ""
-	if err := h.updateAgentSettings(projectDir, templateDir); err != nil {
-		persistMessage = fmt.Sprintf(" (Warning: Could not persist to agent config: %v)", err)
-	} else {
-		persistMessage = " and persisted to agent config"
-	}
+	// Note: Persistence is now handled by the main tool's SettingsManager.UpdateSettings()
+	// This removes the duplicate persistence and agentContext dependency here
 
 	return fmt.Sprintf("✅ Setup completed successfully!\n\n"+
-		"Configuration saved%s:\n"+
+		"Configuration saved:\n"+
 		"- Project Directory: %s\n"+
 		"- Template Directory: %s\n"+
 		"- Default Template: %s\n\n"+
 		"You can now use operation 'create_project' to create new music projects. "+
 		"Make sure to place a default.RPP template file in your template directory for best results.",
-		persistMessage, settings.ProjectDir, settings.TemplateDir, settings.DefaultTemplate), nil
+		settings.ProjectDir, settings.TemplateDir, settings.DefaultTemplate), nil
 }
 
 // Helper functions
@@ -244,7 +271,7 @@ func updateProjectBPM(filePath string, bpm int) error {
 	if err != nil {
 		return err
 	}
-	
+
 	lines := strings.Split(string(content), "\n")
 	for i, line := range lines {
 		trimmed := strings.TrimLeft(line, " \t")
@@ -258,7 +285,7 @@ func updateProjectBPM(filePath string, bpm int) error {
 			break
 		}
 	}
-	
+
 	return os.WriteFile(filePath, []byte(strings.Join(lines, "\n")), 0644)
 }
 
@@ -296,26 +323,50 @@ func (h *ProjectHandler) getAgentSettings() (map[string]interface{}, error) {
 
 // updateAgentSettings updates the agent's settings file with new directory settings
 func (h *ProjectHandler) updateAgentSettings(projectDir, templateDir string) error {
+
+	fmt.Println("Updating Agent")
 	if h.agentContext == nil {
-		return fmt.Errorf("no agent context available - cannot determine settings file path")
+		fmt.Printf("WARNING: agentContext is nil - skipping agent settings persistence\n")
+		// Don't return an error, just skip the persistence step
+		// This allows the operation to continue with in-memory settings
+		return nil
 	}
 
+	fmt.Printf("agentContext available: %+v\n", h.agentContext)
 	settingsFilePath := h.agentContext.SettingsPath
+	fmt.Println("settings file Path")
+	fmt.Println(settingsFilePath)
+	
+	if settingsFilePath == "" {
+		fmt.Printf("ERROR: settingsFilePath is empty\n")
+		return fmt.Errorf("settings file path is empty")
+	}
 
 	var agentSettings map[string]interface{}
 	if settingsData, err := os.ReadFile(settingsFilePath); err == nil {
+		fmt.Printf("Successfully read settings file, size: %d bytes\n", len(settingsData))
 		if err := json.Unmarshal(settingsData, &agentSettings); err != nil {
+			fmt.Printf("ERROR: Failed to parse JSON: %v\n", err)
 			return fmt.Errorf("failed to parse agent settings at %s: %w", settingsFilePath, err)
 		}
+		fmt.Printf("Successfully parsed JSON, keys: %v\n", getKeys(agentSettings))
 	} else {
+		fmt.Printf("Settings file doesn't exist or can't be read: %v, creating new\n", err)
 		agentSettings = make(map[string]interface{})
 	}
 
 	if _, exists := agentSettings["music_project_manager"]; !exists {
+		fmt.Println("Creating new music_project_manager section")
 		agentSettings["music_project_manager"] = make(map[string]interface{})
 	}
 
-	musicSettings := agentSettings["music_project_manager"].(map[string]interface{})
+	musicSettings, ok := agentSettings["music_project_manager"].(map[string]interface{})
+	if !ok {
+		fmt.Printf("ERROR: music_project_manager is not a map: %T\n", agentSettings["music_project_manager"])
+		return fmt.Errorf("invalid music_project_manager settings format")
+	}
+
+	fmt.Println("update works to here")
 
 	if projectDir != "" {
 		musicSettings["project_dir"] = projectDir
@@ -327,19 +378,60 @@ func (h *ProjectHandler) updateAgentSettings(projectDir, templateDir string) err
 	}
 
 	if err := os.MkdirAll(filepath.Dir(settingsFilePath), 0755); err != nil {
+		fmt.Printf("ERROR: Failed to create directory %s: %v\n", filepath.Dir(settingsFilePath), err)
 		return fmt.Errorf("failed to create agent directory: %w", err)
 	}
+	fmt.Printf("Successfully ensured directory exists: %s\n", filepath.Dir(settingsFilePath))
 
 	updatedData, err := json.MarshalIndent(agentSettings, "", "  ")
 	if err != nil {
+		fmt.Printf("ERROR: Failed to marshal JSON: %v\n", err)
 		return fmt.Errorf("failed to marshal updated agent settings: %w", err)
 	}
 
+	fmt.Println("update works to here")
+	fmt.Printf("Final agentSettings: %+v\n", agentSettings)
+	fmt.Printf("Writing to path: %s\n", settingsFilePath)
+	fmt.Printf("Data to write (%d bytes): %s\n", len(updatedData), string(updatedData))
+
 	if err := os.WriteFile(settingsFilePath, updatedData, 0644); err != nil {
+		fmt.Printf("ERROR: Failed to write file: %v\n", err)
 		return fmt.Errorf("failed to write to %s: %w", settingsFilePath, err)
 	}
 
+	fmt.Printf("SUCCESS: Settings successfully written to %s\n", settingsFilePath)
 	return nil
+}
+
+// expandTilde expands ~ to the user's home directory
+func expandTilde(path string) (string, error) {
+	if !strings.HasPrefix(path, "~") {
+		return path, nil
+	}
+	
+	usr, err := user.Current()
+	if err != nil {
+		return "", err
+	}
+	
+	if path == "~" {
+		return usr.HomeDir, nil
+	}
+	
+	if strings.HasPrefix(path, "~/") {
+		return filepath.Join(usr.HomeDir, path[2:]), nil
+	}
+	
+	return path, nil
+}
+
+// getKeys is a helper function to get map keys for debugging
+func getKeys(m map[string]interface{}) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	return keys
 }
 
 // getSuggestedDirectories returns platform-appropriate suggested directories
