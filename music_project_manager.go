@@ -5,20 +5,47 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"os/user"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"time"
 
-	"github.com/johnjallday/dolphin-agent/pluginapi"
-	"github.com/johnjallday/music_project_manager/handlers"
 	"github.com/openai/openai-go/v2"
 )
 
+// PluginTool is the interface that plugins must implement to be used as tools.
+type PluginTool interface {
+	// Definition returns the function definition for OpenAI function calling.
+	Definition() openai.FunctionDefinitionParam
+	// Call executes the tool logic with the given arguments JSON string and returns the result JSON string.
+	Call(ctx context.Context, args string) (string, error)
+}
+
+// Settings represents the plugin configuration
+type Settings struct {
+	DefaultTemplate string `json:"default_template"`
+	ProjectDir      string `json:"project_dir"`
+	TemplateDir     string `json:"template_dir"`
+}
+
+// Project represents a music project
+type Project struct {
+	Name         string    `json:"name"`
+	Path         string    `json:"path"`
+	LastModified time.Time `json:"lastModified"`
+	Size         int64     `json:"size"`
+}
+
+// AgentsConfig represents the agents.json file structure
+type AgentsConfig struct {
+	CurrentAgent string `json:"current"`
+}
+
 // musicProjectManagerTool implements Tool for music project management.
 type musicProjectManagerTool struct {
-	agentContext   *pluginapi.AgentContext
-	projectHandler *handlers.ProjectHandler
-	settings       *SettingsManager
+	getSettings func() (*Settings, error)
 }
 
 // Version information set at build time via -ldflags
@@ -41,49 +68,32 @@ func (m *musicProjectManagerTool) GetBuildInfo() map[string]string {
 	}
 }
 
-func (m *musicProjectManagerTool) initializeHandler() {
-	if m.projectHandler == nil {
-		if m.settings == nil {
-			m.settings = &SettingsManager{}
-		}
-		m.projectHandler = handlers.NewProjectHandler(m.agentContext, m.settings)
-	}
-}
-
 // Definition returns the OpenAI function definition for music project management operations.
 func (m *musicProjectManagerTool) Definition() openai.FunctionDefinitionParam {
 	return openai.FunctionDefinitionParam{
 		Name:        "music_project_manager",
-		Description: openai.String("Manage music projects: create projects, configure settings, and setup plugin"),
+		Description: openai.String("Manage music projects: create projects, open existing projects, scan for .RPP files, list existing projects, and view settings"),
 		Parameters: openai.FunctionParameters{
 			"type": "object",
 			"properties": map[string]any{
 				"operation": map[string]any{
 					"type":        "string",
 					"description": "Operation to perform",
-					"enum":        []string{"create_project", "set_project_dir", "set_template_dir", "get_settings", "init_setup", "complete_setup"},
+					"enum":        []string{"create_project", "get_settings", "scan", "list_projects", "open_project"},
 				},
 				"name": map[string]any{
 					"type":        "string",
 					"description": "Project name (required for create_project)",
+				},
+				"path": map[string]any{
+					"type":        "string",
+					"description": "Project file path (required for open_project)",
 				},
 				"bpm": map[string]any{
 					"type":        "integer",
 					"description": "BPM for the project (optional for create_project)",
 					"minimum":     30,
 					"maximum":     300,
-				},
-				"path": map[string]any{
-					"type":        "string",
-					"description": "Directory path (required for set_project_dir, set_template_dir)",
-				},
-				"project_dir": map[string]any{
-					"type":        "string",
-					"description": "Project directory path (required for complete_setup)",
-				},
-				"template_dir": map[string]any{
-					"type":        "string",
-					"description": "Template directory path (required for complete_setup)",
 				},
 			},
 			"required": []string{"operation"},
@@ -93,183 +103,237 @@ func (m *musicProjectManagerTool) Definition() openai.FunctionDefinitionParam {
 
 // Call is invoked with the function arguments and dispatches to the appropriate operation.
 func (m *musicProjectManagerTool) Call(ctx context.Context, args string) (string, error) {
-	if m.projectHandler == nil {
-		m.initializeHandler()
+	if m.getSettings == nil {
+		m.getSettings = m.loadSettingsFromAPI
 	}
 
-	var p struct {
-		Operation   string `json:"operation"`
-		Name        string `json:"name"`
-		BPM         int    `json:"bpm"`
-		Path        string `json:"path"`
-		ProjectDir  string `json:"project_dir"`
-		TemplateDir string `json:"template_dir"`
+	var params struct {
+		Operation string `json:"operation"`
+		Name      string `json:"name"`
+		Path      string `json:"path"`
+		BPM       int    `json:"bpm"`
 	}
 
-	if err := json.Unmarshal([]byte(args), &p); err != nil {
+	if err := json.Unmarshal([]byte(args), &params); err != nil {
 		return "", fmt.Errorf("failed to parse arguments: %w", err)
 	}
 
-	// Allow certain operations even when not initialized
-	allowedWhenUninitialized := []string{"get_settings", "init_setup", "complete_setup"}
-	operationAllowed := false
-	for _, allowed := range allowedWhenUninitialized {
-		if p.Operation == allowed {
-			operationAllowed = true
-			break
-		}
-	}
-
-	// Auto-initialize if not initialized and operation requires it
-	if !m.IsInitialized() && !operationAllowed {
-		// Return initialization prompt instead of proceeding with operation
-		return m.projectHandler.InitSetup()
-	}
-
-	switch p.Operation {
+	switch params.Operation {
 	case "create_project":
-		if err := validateCreateProject(p.Name, p.BPM); err != nil {
-			return "", err
-		}
-		return m.projectHandler.CreateProject(p.Name, p.BPM)
-
-	case "set_project_dir":
-		if err := validatePath(p.Path, "project directory"); err != nil {
-			return "", err
-		}
-		result, err := m.projectHandler.SetProjectDir(p.Path)
-		if err != nil {
-			return "", err
-		}
-
-		// Expand tilde before persisting
-		expandedPath, err := expandTilde(p.Path)
-		if err != nil {
-			fmt.Printf("Warning: Failed to expand project directory path: %v\n", err)
-			expandedPath = p.Path
-		}
-
-		// Update in-memory settings only (persistence handled by ProjectHandler)
-		if m.settings != nil {
-			if updateErr := m.settings.UpdateSettings(expandedPath, "", m.IsInitialized(), nil); updateErr != nil {
-				// Log the error but don't fail the operation
-				fmt.Printf("Warning: Failed to update in-memory project directory setting: %v\n", updateErr)
-			}
-		}
-
-		return result, nil
-
-	case "set_template_dir":
-		if err := validatePath(p.Path, "template directory"); err != nil {
-			return "", err
-		}
-		result, err := m.projectHandler.SetTemplateDir(p.Path)
-		if err != nil {
-			return "", err
-		}
-
-		// Expand tilde before persisting
-		expandedPath, err := expandTilde(p.Path)
-		if err != nil {
-			fmt.Printf("Warning: Failed to expand template directory path: %v\n", err)
-			expandedPath = p.Path
-		}
-
-		// Update in-memory settings only (persistence handled by ProjectHandler)
-		if m.settings != nil {
-			if updateErr := m.settings.UpdateSettings("", expandedPath, m.IsInitialized(), nil); updateErr != nil {
-				// Log the error but don't fail the operation
-				fmt.Printf("Warning: Failed to update in-memory template directory setting: %v\n", updateErr)
-			}
-		}
-
-		return result, nil
-
+		return m.createProject(params.Name, params.BPM)
 	case "get_settings":
-		return m.projectHandler.GetSettings()
-
-	case "init_setup":
-		return m.projectHandler.InitSetup()
-
-	case "complete_setup":
-		if err := validateCompleteSetup(p.ProjectDir, p.TemplateDir); err != nil {
-			return "", err
-		}
-		result, err := m.projectHandler.CompleteSetup(p.ProjectDir, p.TemplateDir)
-		if err != nil {
-			return "", err
-		}
-
-		// Expand tilde in paths before persisting
-		expandedProjectDir, err := expandTilde(p.ProjectDir)
-		if err != nil {
-			fmt.Printf("Warning: Failed to expand project directory path: %v\n", err)
-			expandedProjectDir = p.ProjectDir
-		}
-
-		expandedTemplateDir, err := expandTilde(p.TemplateDir)
-		if err != nil {
-			fmt.Printf("Warning: Failed to expand template directory path: %v\n", err)
-			expandedTemplateDir = p.TemplateDir
-		}
-
-		// Update settings manager to persist changes
-		if m.settings != nil {
-			fmt.Printf("DEBUG: About to call UpdateSettings with agentContext: %+v\n", m.agentContext)
-			if updateErr := m.settings.UpdateSettings(expandedProjectDir, expandedTemplateDir, true, m.agentContext); updateErr != nil {
-				// Log the error but don't fail the operation
-				fmt.Printf("Warning: Failed to update settings: %v\n", updateErr)
-			} else {
-				fmt.Printf("DEBUG: Settings updated successfully\n")
-			}
-		} else {
-			fmt.Printf("DEBUG: settings is nil\n")
-		}
-
-		return result, nil
-
+		return m.getSettingsStruct()
+	case "scan":
+		return m.scanProjects()
+	case "list_projects":
+		return m.listProjects()
+	case "open_project":
+		return m.openProject(params.Path)
 	default:
-		return "", fmt.Errorf("unknown operation %q. Valid operations: create_project, set_project_dir, set_template_dir, get_settings, init_setup, complete_setup", p.Operation)
+		return "", fmt.Errorf("unknown operation %q. Valid operations: create_project, get_settings, scan, list_projects, open_project", params.Operation)
 	}
 }
 
-// Settings interface implementation
-func (m *musicProjectManagerTool) GetSettings() (string, error) {
-	if m.settings == nil {
-		m.settings = &SettingsManager{}
+// createProject creates a new music project
+func (m *musicProjectManagerTool) createProject(name string, bpm int) (string, error) {
+	if err := validateCreateProject(name, bpm); err != nil {
+		return "", err
 	}
-	return m.settings.GetSettings()
+
+	settings, err := m.getSettings()
+	if err != nil {
+		return "", fmt.Errorf("failed to load settings: %w", err)
+	}
+
+	if settings.ProjectDir == "" || settings.TemplateDir == "" {
+		return "Music Project Manager needs to be configured. Please set project_dir and template_dir in the application settings.", nil
+	}
+
+	projectDirBase := settings.ProjectDir
+	templateDir := settings.TemplateDir
+
+	defaultTemplate := filepath.Join(templateDir, "default.RPP")
+	projectDir := filepath.Join(projectDirBase, name)
+
+	if err := os.MkdirAll(projectDir, 0755); err != nil {
+		return "", fmt.Errorf("failed to create project directory %q: %w", projectDir, err)
+	}
+
+	dest := filepath.Join(projectDir, name+".RPP")
+	data, err := os.ReadFile(defaultTemplate)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", fmt.Errorf("template file not found at %q. Please ensure a default.RPP template exists in your template directory", defaultTemplate)
+		}
+		return "", fmt.Errorf("failed to read template file %q: %w", defaultTemplate, err)
+	}
+
+	if err := os.WriteFile(dest, data, 0644); err != nil {
+		return "", fmt.Errorf("failed to write project file: %w", err)
+	}
+
+	if bpm > 0 {
+		if err := updateProjectBPM(dest, bpm); err != nil {
+			return "", fmt.Errorf("failed to update BPM in project file: %w", err)
+		}
+	}
+
+	if err := launchReaper(dest); err != nil {
+		return "", fmt.Errorf("failed to launch Reaper: %w", err)
+	}
+
+	msg := fmt.Sprintf("Created and launched project: %s", dest)
+	if bpm > 0 {
+		msg += fmt.Sprintf(" (BPM %d)", bpm)
+	}
+	return msg, nil
 }
 
-func (m *musicProjectManagerTool) SetSettings(settings string) error {
-	if m.settings == nil {
-		m.settings = &SettingsManager{}
+// openProject opens an existing project using launchReaper
+func (m *musicProjectManagerTool) openProject(projectPath string) (string, error) {
+	if projectPath == "" {
+		return "", fmt.Errorf("project path is required and cannot be empty")
 	}
-	return m.settings.SetSettings(settings)
+
+	// Check if the file exists
+	if _, err := os.Stat(projectPath); os.IsNotExist(err) {
+		return "", fmt.Errorf("project file not found: %s", projectPath)
+	}
+
+	// Check if it's a .RPP file
+	if strings.ToLower(filepath.Ext(projectPath)) != ".rpp" {
+		return "", fmt.Errorf("file must be a .RPP (Reaper project) file, got: %s", filepath.Ext(projectPath))
+	}
+
+	// Launch Reaper with the project file
+	if err := launchReaper(projectPath); err != nil {
+		return "", fmt.Errorf("failed to launch Reaper with project %s: %w", projectPath, err)
+	}
+
+	return fmt.Sprintf("Opened project: %s", projectPath), nil
 }
 
+// scanProjects scans for .RPP files in the project directory and saves to projects.json
+func (m *musicProjectManagerTool) scanProjects() (string, error) {
+	settings, err := m.getSettings()
+	if err != nil {
+		return "", fmt.Errorf("failed to load settings: %w", err)
+	}
+
+	if settings.ProjectDir == "" {
+		return "Music Project Manager needs to be configured. Please set project_dir in the application settings.", nil
+	}
+
+	projectDir := settings.ProjectDir
+
+	// Check if project directory exists
+	if _, err := os.Stat(projectDir); os.IsNotExist(err) {
+		return fmt.Sprintf("Project directory does not exist: %s", projectDir), nil
+	}
+
+	var projects []Project
+
+	err = filepath.Walk(projectDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+
+		// Check if file has .RPP extension (Reaper project files)
+		if strings.ToLower(filepath.Ext(path)) == ".rpp" {
+			project := Project{
+				Name:         strings.TrimSuffix(filepath.Base(path), filepath.Ext(path)),
+				Path:         path,
+				LastModified: info.ModTime(),
+				Size:         info.Size(),
+			}
+			projects = append(projects, project)
+		}
+		return nil
+	})
+
+	if err != nil {
+		return "", fmt.Errorf("error scanning directory: %w", err)
+	}
+
+	// Create projects.json file in the project directory
+	projectsFile := filepath.Join(projectDir, "projects.json")
+
+	projectsData, err := json.MarshalIndent(projects, "", "  ")
+	if err != nil {
+		return "", fmt.Errorf("error marshaling projects data: %w", err)
+	}
+
+	err = os.WriteFile(projectsFile, projectsData, 0644)
+	if err != nil {
+		return "", fmt.Errorf("error writing projects.json: %w", err)
+	}
+
+	return fmt.Sprintf("Found %d .RPP projects and saved to %s:\n%s", len(projects), projectsFile, string(projectsData)), nil
+}
+
+// listProjects reads and returns the content of projects.json
+func (m *musicProjectManagerTool) listProjects() (string, error) {
+	settings, err := m.getSettings()
+	if err != nil {
+		return "", fmt.Errorf("failed to load settings: %w", err)
+	}
+
+	if settings.ProjectDir == "" {
+		return "Music Project Manager needs to be configured. Please set project_dir in the application settings.", nil
+	}
+
+	projectDir := settings.ProjectDir
+	projectsFile := filepath.Join(projectDir, "projects.json")
+
+	// Check if projects.json exists
+	if _, err := os.Stat(projectsFile); os.IsNotExist(err) {
+		return fmt.Sprintf("No projects.json file found at %s. Run 'scan' operation first to generate the projects list.", projectsFile), nil
+	}
+
+	// Read the projects.json file
+	data, err := os.ReadFile(projectsFile)
+	if err != nil {
+		return "", fmt.Errorf("failed to read projects.json: %w", err)
+	}
+
+	// Parse the JSON to validate it and get project count
+	var projects []Project
+	if err := json.Unmarshal(data, &projects); err != nil {
+		return "", fmt.Errorf("failed to parse projects.json: %w", err)
+	}
+
+	// Return formatted output with project count and the JSON content
+	return fmt.Sprintf("Found %d projects in %s:\n%s", len(projects), projectsFile, string(data)), nil
+}
+
+// getSettingsStruct returns the field names and types of the Settings struct
+func (m *musicProjectManagerTool) getSettingsStruct() (string, error) {
+	fieldInfo := map[string]string{
+		"default_template": "filepath",
+		"project_dir":      "filepath",
+		"template_dir":     "filepath",
+	}
+	data, err := json.Marshal(fieldInfo)
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal field info: %w", err)
+	}
+	return string(data), nil
+}
+
+// GetDefaultSettings returns default settings as JSON (implementing pluginapi interface)
 func (m *musicProjectManagerTool) GetDefaultSettings() (string, error) {
-	if m.settings == nil {
-		m.settings = &SettingsManager{}
+	defaultSettings, err := m.getDefaultSettings()
+	if err != nil {
+		return "", err
 	}
-	return m.settings.GetDefaultSettings()
-}
 
-func (m *musicProjectManagerTool) IsInitialized() bool {
-	if m.settings == nil {
-		m.settings = &SettingsManager{}
+	data, err := json.MarshalIndent(defaultSettings, "", "  ")
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal default settings: %w", err)
 	}
-	return m.settings.IsInitialized()
-}
 
-// SetAgentContext provides the current agent information to the plugin
-func (m *musicProjectManagerTool) SetAgentContext(ctx pluginapi.AgentContext) {
-	m.agentContext = &ctx
-	// Reset project handler to use new context
-	m.projectHandler = nil
+	return string(data), nil
 }
-
-// Validation functions
 
 // validateCreateProject validates parameters for create_project operation
 func validateCreateProject(name string, bpm int) error {
@@ -290,86 +354,92 @@ func validateCreateProject(name string, bpm int) error {
 	return nil
 }
 
-// expandTilde expands ~ to the user's home directory
-func expandTilde(path string) (string, error) {
-	if !strings.HasPrefix(path, "~") {
-		return path, nil
+// loadSettingsFromAPI loads settings from agent-specific settings file
+func (m *musicProjectManagerTool) loadSettingsFromAPI() (*Settings, error) {
+	// Get current agent from agents.json file
+	currentAgent, err := m.getCurrentAgentFromFile()
+	if err != nil {
+		// Fall back to default settings if no agent file or error reading it
+		return m.getDefaultSettings()
 	}
 
+	// Try to load settings from the agent-specific file
+	settingsPath := filepath.Join(".", "agents", currentAgent, "music_project_manager_settings.json")
+	if data, err := os.ReadFile(settingsPath); err == nil {
+		var settings Settings
+		if err := json.Unmarshal(data, &settings); err == nil {
+			return &settings, nil
+		}
+	}
+
+	// Fall back to default settings if file doesn't exist or is invalid
+	return m.getDefaultSettings()
+}
+
+// getCurrentAgentFromFile reads the current agent from agents.json
+func (m *musicProjectManagerTool) getCurrentAgentFromFile() (string, error) {
+	agentsFilePath := filepath.Join(".", "agents.json")
+	data, err := os.ReadFile(agentsFilePath)
+	if err != nil {
+		return "", fmt.Errorf("failed to read agents.json: %w", err)
+	}
+
+	var agentsConfig AgentsConfig
+	if err := json.Unmarshal(data, &agentsConfig); err != nil {
+		return "", fmt.Errorf("failed to parse agents.json: %w", err)
+	}
+
+	if agentsConfig.CurrentAgent == "" {
+		return "", fmt.Errorf("no current agent set in agents.json")
+	}
+
+	return agentsConfig.CurrentAgent, nil
+}
+
+// getDefaultSettings returns default settings for the music project manager
+func (m *musicProjectManagerTool) getDefaultSettings() (*Settings, error) {
 	usr, err := user.Current()
 	if err != nil {
-		return "", err
+		return nil, fmt.Errorf("failed to get current user: %w", err)
 	}
 
-	if path == "~" {
-		return usr.HomeDir, nil
-	}
-
-	if strings.HasPrefix(path, "~/") {
-		return filepath.Join(usr.HomeDir, path[2:]), nil
-	}
-
-	return path, nil
+	return &Settings{
+		ProjectDir:      filepath.Join(usr.HomeDir, "Music", "Projects"),
+		TemplateDir:     filepath.Join(usr.HomeDir, "Library", "Application Support", "REAPER", "ProjectTemplates"),
+		DefaultTemplate: filepath.Join(usr.HomeDir, "Library", "Application Support", "REAPER", "ProjectTemplates", "Default.RPP"),
+	}, nil
 }
 
-// validatePath validates a file system path parameter
-func validatePath(path, pathType string) error {
-	if path == "" {
-		return fmt.Errorf("%s path is required and cannot be empty", pathType)
-	}
-
-	// Expand tilde first
-	expandedPath, err := expandTilde(path)
+// updateProjectBPM updates the BPM in a project file
+func updateProjectBPM(filePath string, bpm int) error {
+	content, err := os.ReadFile(filePath)
 	if err != nil {
-		return fmt.Errorf("failed to expand home directory in %s path %q: %w", pathType, path, err)
+		return err
 	}
 
-	// Convert to absolute path and check if it's valid
-	absPath, err := filepath.Abs(expandedPath)
-	if err != nil {
-		return fmt.Errorf("invalid %s path %q: %w", pathType, path, err)
-	}
-
-	// Check if parent directory exists (for the case where we're creating the final directory)
-	parentDir := filepath.Dir(absPath)
-	if _, err := os.Stat(parentDir); err != nil {
-		if os.IsNotExist(err) {
-			return fmt.Errorf("parent directory for %s does not exist: %s", pathType, parentDir)
+	lines := strings.Split(string(content), "\n")
+	for i, line := range lines {
+		trimmed := strings.TrimLeft(line, " \t")
+		if strings.HasPrefix(trimmed, "TEMPO ") {
+			indent := line[:len(line)-len(trimmed)]
+			parts := strings.Fields(trimmed)
+			if len(parts) >= 2 {
+				parts[1] = strconv.Itoa(bpm)
+				lines[i] = indent + strings.Join(parts, " ")
+			}
+			break
 		}
-		return fmt.Errorf("cannot access parent directory for %s: %w", pathType, err)
 	}
 
-	return nil
+	return os.WriteFile(filePath, []byte(strings.Join(lines, "\n")), 0644)
 }
 
-// validateCompleteSetup validates parameters for complete_setup operation
-func validateCompleteSetup(projectDir, templateDir string) error {
-	if projectDir == "" {
-		return fmt.Errorf("project_dir is required for complete_setup operation")
-	}
-
-	if templateDir == "" {
-		return fmt.Errorf("template_dir is required for complete_setup operation")
-	}
-
-	// Validate both paths
-	if err := validatePath(projectDir, "project directory"); err != nil {
-		return err
-	}
-
-	if err := validatePath(templateDir, "template directory"); err != nil {
-		return err
-	}
-
-	// Check that the directories are different
-	absProjectDir, _ := filepath.Abs(projectDir)
-	absTemplateDir, _ := filepath.Abs(templateDir)
-
-	if absProjectDir == absTemplateDir {
-		return fmt.Errorf("project directory and template directory cannot be the same")
-	}
-
-	return nil
+// launchReaper launches Reaper with the given project file
+func launchReaper(projectPath string) error {
+	cmd := exec.Command("open", "-a", "Reaper", projectPath)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
 }
 
 // Tool is the exported symbol that the host application will look up.

@@ -8,7 +8,6 @@ A standalone Go plugin for managing music projects with REAPER DAW integration.
 - **Directory Management**: Configure project and template directories
 - **Template System**: Use .RPP template files to bootstrap new projects
 - **Cross-Platform**: Works on macOS, Windows, and Linux with appropriate REAPER paths
-- **Agent Context**: Supports agent-based configuration for multi-user environments
 
 ## Building
 
@@ -44,9 +43,7 @@ This will create `music_project_manager.so` plugin file.
 
 ## Configuration
 
-The plugin stores settings in agent-specific configuration files:
-- `config.json`: Plugin definition and schema
-- `agent_settings.json`: User-specific directory paths and settings
+The plugin uses function-based settings management where settings are provided by the host application.
 
 ## Platform Support
 
@@ -62,7 +59,6 @@ The plugin stores settings in agent-specific configuration files:
 
 This plugin implements the following interfaces:
 - `PluginTool`: Basic plugin functionality
-- `AgentAwareTool`: Agent context support for multi-agent environments
 
 ## Dependencies
 
