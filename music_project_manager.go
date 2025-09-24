@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"os/user"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -72,14 +73,14 @@ func (m *musicProjectManagerTool) GetBuildInfo() map[string]string {
 func (m *musicProjectManagerTool) Definition() openai.FunctionDefinitionParam {
 	return openai.FunctionDefinitionParam{
 		Name:        "music_project_manager",
-		Description: openai.String("Manage music projects: create projects, open existing projects, scan for .RPP files, list existing projects, and view settings"),
+		Description: openai.String("Manage music projects: create projects, open existing projects, scan for .RPP files, list existing projects, filter recent projects, and view settings"),
 		Parameters: openai.FunctionParameters{
 			"type": "object",
 			"properties": map[string]any{
 				"operation": map[string]any{
 					"type":        "string",
 					"description": "Operation to perform",
-					"enum":        []string{"create_project", "get_settings", "scan", "list_projects", "open_project"},
+					"enum":        []string{"create_project", "get_settings", "scan", "list_projects", "open_project", "filter_project"},
 				},
 				"name": map[string]any{
 					"type":        "string",
@@ -129,8 +130,10 @@ func (m *musicProjectManagerTool) Call(ctx context.Context, args string) (string
 		return m.listProjects()
 	case "open_project":
 		return m.openProject(params.Path)
+	case "filter_project":
+		return m.filterProject()
 	default:
-		return "", fmt.Errorf("unknown operation %q. Valid operations: create_project, get_settings, scan, list_projects, open_project", params.Operation)
+		return "", fmt.Errorf("unknown operation %q. Valid operations: create_project, get_settings, scan, list_projects, open_project, filter_project", params.Operation)
 	}
 }
 
@@ -304,6 +307,62 @@ func (m *musicProjectManagerTool) listProjects() (string, error) {
 
 	// Return formatted output with project count and the JSON content
 	return fmt.Sprintf("Found %d projects in %s:\n%s", len(projects), projectsFile, string(data)), nil
+}
+
+// filterProject returns the 20 most recently modified projects from projects.json
+func (m *musicProjectManagerTool) filterProject() (string, error) {
+	settings, err := m.getSettings()
+	if err != nil {
+		return "", fmt.Errorf("failed to load settings: %w", err)
+	}
+
+	if settings.ProjectDir == "" {
+		return "Music Project Manager needs to be configured. Please set project_dir in the application settings.", nil
+	}
+
+	projectDir := settings.ProjectDir
+	projectsFile := filepath.Join(projectDir, "projects.json")
+
+	// Check if projects.json exists
+	if _, err := os.Stat(projectsFile); os.IsNotExist(err) {
+		return fmt.Sprintf("No projects.json file found at %s. Run 'scan' operation first to generate the projects list.", projectsFile), nil
+	}
+
+	// Read the projects.json file
+	data, err := os.ReadFile(projectsFile)
+	if err != nil {
+		return "", fmt.Errorf("failed to read projects.json: %w", err)
+	}
+
+	// Parse the JSON
+	var projects []Project
+	if err := json.Unmarshal(data, &projects); err != nil {
+		return "", fmt.Errorf("failed to parse projects.json: %w", err)
+	}
+
+	if len(projects) == 0 {
+		return fmt.Sprintf("No projects found in %s", projectsFile), nil
+	}
+
+	// Sort projects by LastModified time in descending order (most recent first)
+	sort.Slice(projects, func(i, j int) bool {
+		return projects[i].LastModified.After(projects[j].LastModified)
+	})
+
+	// Take only the first 20 projects (or fewer if less than 20 exist)
+	limit := 20
+	if len(projects) < limit {
+		limit = len(projects)
+	}
+	recentProjects := projects[:limit]
+
+	// Convert to JSON
+	projectsData, err := json.MarshalIndent(recentProjects, "", "  ")
+	if err != nil {
+		return "", fmt.Errorf("error marshaling filtered projects data: %w", err)
+	}
+
+	return fmt.Sprintf("Found %d total projects, showing %d most recently modified:\n%s", len(projects), limit, string(projectsData)), nil
 }
 
 // getSettingsStruct returns the field names and types of the Settings struct
