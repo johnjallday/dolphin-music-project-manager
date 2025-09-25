@@ -394,6 +394,57 @@ func (m *musicProjectManagerTool) GetDefaultSettings() (string, error) {
 	return string(data), nil
 }
 
+// GetSettings returns current settings as JSON (implementing settings interface)
+func (m *musicProjectManagerTool) GetSettings() (string, error) {
+	settings, err := m.getSettings()
+	if err != nil {
+		return "", err
+	}
+	data, err := json.MarshalIndent(settings, "", "  ")
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal current settings: %w", err)
+	}
+	return string(data), nil
+}
+
+// SetSettings updates the plugin settings from JSON (implementing settings interface)
+func (m *musicProjectManagerTool) SetSettings(settingsJSON string) error {
+	var newSettings Settings
+	if err := json.Unmarshal([]byte(settingsJSON), &newSettings); err != nil {
+		return fmt.Errorf("failed to unmarshal settings: %w", err)
+	}
+
+	// Get current agent from agents.json file
+	currentAgent, err := m.getCurrentAgentFromFile()
+	if err != nil {
+		return fmt.Errorf("failed to get current agent: %w", err)
+	}
+
+	// Ensure agents directory exists
+	agentDir := filepath.Join(".", "agents", currentAgent)
+	if err := os.MkdirAll(agentDir, 0755); err != nil {
+		return fmt.Errorf("failed to create agent directory: %w", err)
+	}
+
+	// Save settings to agent-specific file
+	settingsPath := filepath.Join(agentDir, "music_project_manager_settings.json")
+	data, err := json.MarshalIndent(newSettings, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal settings for saving: %w", err)
+	}
+
+	if err := os.WriteFile(settingsPath, data, 0644); err != nil {
+		return fmt.Errorf("failed to write settings file: %w", err)
+	}
+
+	// Update the internal getSettings function to use the new settings
+	m.getSettings = func() (*Settings, error) {
+		return &newSettings, nil
+	}
+
+	return nil
+}
+
 // validateCreateProject validates parameters for create_project operation
 func validateCreateProject(name string, bpm int) error {
 	if name == "" {
