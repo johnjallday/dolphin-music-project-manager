@@ -274,7 +274,7 @@ func (m *musicProjectManagerTool) scanProjects() (string, error) {
 	return fmt.Sprintf("Found %d .RPP projects and saved to %s:\n%s", len(projects), projectsFile, string(projectsData)), nil
 }
 
-// listProjects reads and returns the content of projects.json
+// listProjects reads and returns the 30 most recent projects as JSON
 func (m *musicProjectManagerTool) listProjects() (string, error) {
 	settings, err := m.getSettings()
 	if err != nil {
@@ -299,14 +299,35 @@ func (m *musicProjectManagerTool) listProjects() (string, error) {
 		return "", fmt.Errorf("failed to read projects.json: %w", err)
 	}
 
-	// Parse the JSON to validate it and get project count
+	// Parse the JSON
 	var projects []Project
 	if err := json.Unmarshal(data, &projects); err != nil {
 		return "", fmt.Errorf("failed to parse projects.json: %w", err)
 	}
 
-	// Return formatted output with project count and the JSON content
-	return fmt.Sprintf("Found %d projects in %s:\n%s", len(projects), projectsFile, string(data)), nil
+	if len(projects) == 0 {
+		return fmt.Sprintf("No projects found in %s", projectsFile), nil
+	}
+
+	// Sort projects by LastModified time in descending order (most recent first)
+	sort.Slice(projects, func(i, j int) bool {
+		return projects[i].LastModified.After(projects[j].LastModified)
+	})
+
+	// Take only the first 30 projects (or fewer if less than 30 exist)
+	limit := 30
+	if len(projects) < limit {
+		limit = len(projects)
+	}
+	recentProjects := projects[:limit]
+
+	// Return JSON array for frontend table rendering
+	projectsData, err := json.MarshalIndent(recentProjects, "", "  ")
+	if err != nil {
+		return "", fmt.Errorf("error marshaling projects data: %w", err)
+	}
+
+	return string(projectsData), nil
 }
 
 // filterProject returns the 20 most recently modified projects from projects.json
