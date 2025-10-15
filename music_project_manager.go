@@ -1,9 +1,11 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"os/user"
@@ -13,6 +15,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/hashicorp/go-plugin"
+	"github.com/johnjallday/dolphin-agent/pluginapi"
 	"github.com/openai/openai-go/v2"
 )
 
@@ -37,6 +41,7 @@ type Project struct {
 	Path         string    `json:"path"`
 	LastModified time.Time `json:"lastModified"`
 	Size         int64     `json:"size"`
+	BPM          float64   `json:"bpm"`
 }
 
 // AgentsConfig represents the agents.json file structure
@@ -92,7 +97,19 @@ func (m *musicProjectManagerTool) Definition() openai.FunctionDefinitionParam {
 				},
 				"bpm": map[string]any{
 					"type":        "integer",
-					"description": "BPM for the project (optional for create_project)",
+					"description": "BPM for the project (optional for create_project, exact BPM for filter_project)",
+					"minimum":     30,
+					"maximum":     300,
+				},
+				"min_bpm": map[string]any{
+					"type":        "integer",
+					"description": "Minimum BPM for filter_project (optional)",
+					"minimum":     30,
+					"maximum":     300,
+				},
+				"max_bpm": map[string]any{
+					"type":        "integer",
+					"description": "Maximum BPM for filter_project (optional)",
 					"minimum":     30,
 					"maximum":     300,
 				},
@@ -113,6 +130,8 @@ func (m *musicProjectManagerTool) Call(ctx context.Context, args string) (string
 		Name      string `json:"name"`
 		Path      string `json:"path"`
 		BPM       int    `json:"bpm"`
+		MinBPM    int    `json:"min_bpm"`
+		MaxBPM    int    `json:"max_bpm"`
 	}
 
 	if err := json.Unmarshal([]byte(args), &params); err != nil {
@@ -131,7 +150,7 @@ func (m *musicProjectManagerTool) Call(ctx context.Context, args string) (string
 	case "open_project":
 		return m.openProject(params.Path)
 	case "filter_project":
-		return m.filterProject()
+		return m.filterProject(params.Name, params.BPM, params.MinBPM, params.MaxBPM)
 	default:
 		return "", fmt.Errorf("unknown operation %q. Valid operations: create_project, get_settings, scan, list_projects, open_project, filter_project", params.Operation)
 	}
@@ -217,6 +236,7 @@ func (m *musicProjectManagerTool) openProject(projectPath string) (string, error
 }
 
 // scanProjects scans for .RPP files in the project directory and saves to projects.json
+// Returns immediately and runs the scan in the background
 func (m *musicProjectManagerTool) scanProjects() (string, error) {
 	settings, err := m.getSettings()
 	if err != nil {
@@ -234,44 +254,62 @@ func (m *musicProjectManagerTool) scanProjects() (string, error) {
 		return fmt.Sprintf("Project directory does not exist: %s", projectDir), nil
 	}
 
-	var projects []Project
+	// Start scanning in the background
+	go func() {
+		log.Printf("[music-project-manager] Starting background scan of %s", projectDir)
 
-	err = filepath.Walk(projectDir, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
+		var projects []Project
 
-		// Check if file has .RPP extension (Reaper project files)
-		if strings.ToLower(filepath.Ext(path)) == ".rpp" {
-			project := Project{
-				Name:         strings.TrimSuffix(filepath.Base(path), filepath.Ext(path)),
-				Path:         path,
-				LastModified: info.ModTime(),
-				Size:         info.Size(),
+		err := filepath.Walk(projectDir, func(path string, info os.FileInfo, err error) error {
+			if err != nil {
+				return err
 			}
-			projects = append(projects, project)
+
+			// Check if file has .RPP extension (Reaper project files)
+			if strings.ToLower(filepath.Ext(path)) == ".rpp" {
+				// Extract BPM from the RPP file
+				bpm, err := extractBPMFromRPP(path)
+				if err != nil {
+					log.Printf("[music-project-manager] Warning: failed to extract BPM from %s: %v", path, err)
+					bpm = 0 // Use 0 as default if extraction fails
+				}
+
+				project := Project{
+					Name:         strings.TrimSuffix(filepath.Base(path), filepath.Ext(path)),
+					Path:         path,
+					LastModified: info.ModTime(),
+					Size:         info.Size(),
+					BPM:          bpm,
+				}
+				projects = append(projects, project)
+			}
+			return nil
+		})
+
+		if err != nil {
+			log.Printf("[music-project-manager] Error scanning directory: %v", err)
+			return
 		}
-		return nil
-	})
 
-	if err != nil {
-		return "", fmt.Errorf("error scanning directory: %w", err)
-	}
+		// Create projects.json file in the project directory
+		projectsFile := filepath.Join(projectDir, "projects.json")
 
-	// Create projects.json file in the project directory
-	projectsFile := filepath.Join(projectDir, "projects.json")
+		projectsData, err := json.MarshalIndent(projects, "", "  ")
+		if err != nil {
+			log.Printf("[music-project-manager] Error marshaling projects data: %v", err)
+			return
+		}
 
-	projectsData, err := json.MarshalIndent(projects, "", "  ")
-	if err != nil {
-		return "", fmt.Errorf("error marshaling projects data: %w", err)
-	}
+		err = os.WriteFile(projectsFile, projectsData, 0644)
+		if err != nil {
+			log.Printf("[music-project-manager] Error writing projects.json: %v", err)
+			return
+		}
 
-	err = os.WriteFile(projectsFile, projectsData, 0644)
-	if err != nil {
-		return "", fmt.Errorf("error writing projects.json: %w", err)
-	}
+		log.Printf("[music-project-manager] Scan complete. Found %d projects and saved to %s", len(projects), projectsFile)
+	}()
 
-	return fmt.Sprintf("Found %d .RPP projects and saved to %s:\n%s", len(projects), projectsFile, string(projectsData)), nil
+	return fmt.Sprintf("Scanning %s in the background. Use 'list_projects' to see results once complete.", projectDir), nil
 }
 
 // listProjects reads and returns the 30 most recent projects as JSON
@@ -330,8 +368,8 @@ func (m *musicProjectManagerTool) listProjects() (string, error) {
 	return string(projectsData), nil
 }
 
-// filterProject returns the 20 most recently modified projects from projects.json
-func (m *musicProjectManagerTool) filterProject() (string, error) {
+// filterProject filters projects by name and/or BPM criteria
+func (m *musicProjectManagerTool) filterProject(nameFilter string, exactBPM, minBPM, maxBPM int) (string, error) {
 	settings, err := m.getSettings()
 	if err != nil {
 		return "", fmt.Errorf("failed to load settings: %w", err)
@@ -365,17 +403,45 @@ func (m *musicProjectManagerTool) filterProject() (string, error) {
 		return fmt.Sprintf("No projects found in %s", projectsFile), nil
 	}
 
-	// Sort projects by LastModified time in descending order (most recent first)
-	sort.Slice(projects, func(i, j int) bool {
-		return projects[i].LastModified.After(projects[j].LastModified)
+	// Filter projects based on criteria
+	var filtered []Project
+	for _, proj := range projects {
+		// Filter by name (case-insensitive substring match)
+		if nameFilter != "" && !strings.Contains(strings.ToLower(proj.Name), strings.ToLower(nameFilter)) {
+			continue
+		}
+
+		// Filter by exact BPM if specified
+		if exactBPM > 0 && int(proj.BPM) != exactBPM {
+			continue
+		}
+
+		// Filter by BPM range if specified
+		if minBPM > 0 && proj.BPM < float64(minBPM) {
+			continue
+		}
+		if maxBPM > 0 && proj.BPM > float64(maxBPM) {
+			continue
+		}
+
+		filtered = append(filtered, proj)
+	}
+
+	if len(filtered) == 0 {
+		return "No projects match the filter criteria", nil
+	}
+
+	// Sort filtered projects by LastModified time in descending order (most recent first)
+	sort.Slice(filtered, func(i, j int) bool {
+		return filtered[i].LastModified.After(filtered[j].LastModified)
 	})
 
-	// Take only the first 20 projects (or fewer if less than 20 exist)
-	limit := 20
-	if len(projects) < limit {
-		limit = len(projects)
+	// Take only the first 30 projects (or fewer if less than 30 exist)
+	limit := 30
+	if len(filtered) < limit {
+		limit = len(filtered)
 	}
-	recentProjects := projects[:limit]
+	recentProjects := filtered[:limit]
 
 	// Convert to JSON
 	projectsData, err := json.MarshalIndent(recentProjects, "", "  ")
@@ -383,7 +449,7 @@ func (m *musicProjectManagerTool) filterProject() (string, error) {
 		return "", fmt.Errorf("error marshaling filtered projects data: %w", err)
 	}
 
-	return fmt.Sprintf("Found %d total projects, showing %d most recently modified:\n%s", len(projects), limit, string(projectsData)), nil
+	return fmt.Sprintf("Found %d projects matching filters, showing %d most recent:\n%s", len(filtered), limit, string(projectsData)), nil
 }
 
 // getSettingsStruct returns the field names and types of the Settings struct
@@ -448,7 +514,7 @@ func (m *musicProjectManagerTool) SetSettings(settingsJSON string) error {
 	}
 
 	// Save settings to agent-specific file
-	settingsPath := filepath.Join(agentDir, "music_project_manager_settings.json")
+	settingsPath := filepath.Join(agentDir, "music-project-manager_settings.json")
 	data, err := json.MarshalIndent(newSettings, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to marshal settings for saving: %w", err)
@@ -458,10 +524,9 @@ func (m *musicProjectManagerTool) SetSettings(settingsJSON string) error {
 		return fmt.Errorf("failed to write settings file: %w", err)
 	}
 
-	// Update the internal getSettings function to use the new settings
-	m.getSettings = func() (*Settings, error) {
-		return &newSettings, nil
-	}
+	// Reset getSettings so it reloads from file on next call
+	// This ensures settings changes are picked up immediately
+	m.getSettings = nil
 
 	return nil
 }
@@ -490,21 +555,29 @@ func (m *musicProjectManagerTool) loadSettingsFromAPI() (*Settings, error) {
 	// Get current agent from agents.json file
 	currentAgent, err := m.getCurrentAgentFromFile()
 	if err != nil {
+		log.Printf("[music-project-manager] Failed to get current agent: %v, using defaults", err)
 		// Fall back to default settings if no agent file or error reading it
 		return m.getDefaultSettings()
 	}
 
 	// Try to load settings from the agent-specific file
-	settingsPath := filepath.Join(".", "agents", currentAgent, "music_project_manager_settings.json")
-	if data, err := os.ReadFile(settingsPath); err == nil {
-		var settings Settings
-		if err := json.Unmarshal(data, &settings); err == nil {
-			return &settings, nil
-		}
+	settingsPath := filepath.Join(".", "agents", currentAgent, "music-project-manager_settings.json")
+	log.Printf("[music-project-manager] Attempting to load settings from: %s", settingsPath)
+
+	data, err := os.ReadFile(settingsPath)
+	if err != nil {
+		log.Printf("[music-project-manager] Failed to read settings file: %v, using defaults", err)
+		return m.getDefaultSettings()
 	}
 
-	// Fall back to default settings if file doesn't exist or is invalid
-	return m.getDefaultSettings()
+	var settings Settings
+	if err := json.Unmarshal(data, &settings); err != nil {
+		log.Printf("[music-project-manager] Failed to unmarshal settings: %v, using defaults", err)
+		return m.getDefaultSettings()
+	}
+
+	log.Printf("[music-project-manager] Successfully loaded settings: project_dir=%s", settings.ProjectDir)
+	return &settings, nil
 }
 
 // getCurrentAgentFromFile reads the current agent from agents.json
@@ -542,6 +615,46 @@ func (m *musicProjectManagerTool) getDefaultSettings() (*Settings, error) {
 }
 
 // updateProjectBPM updates the BPM in a project file
+// extractBPMFromRPP reads an RPP file and extracts the BPM value from the TEMPO line
+// Only reads the first 100 lines for performance (TEMPO is typically near the top)
+func extractBPMFromRPP(filePath string) (float64, error) {
+	file, err := os.Open(filePath)
+	if err != nil {
+		return 0, err
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	lineCount := 0
+	maxLines := 100 // Only scan first 100 lines for performance
+
+	for scanner.Scan() && lineCount < maxLines {
+		line := scanner.Text()
+		trimmed := strings.TrimLeft(line, " \t")
+
+		// Look for "TEMPO " with a space after it
+		if strings.HasPrefix(trimmed, "TEMPO ") {
+			parts := strings.Fields(trimmed)
+			if len(parts) >= 2 {
+				// Parse the BPM value (second field after "TEMPO")
+				bpm, err := strconv.ParseFloat(parts[1], 64)
+				if err != nil {
+					return 0, fmt.Errorf("failed to parse BPM value: %w", err)
+				}
+				return bpm, nil
+			}
+		}
+		lineCount++
+	}
+
+	if err := scanner.Err(); err != nil {
+		return 0, err
+	}
+
+	// If no TEMPO line found in first 100 lines, return 0
+	return 0, nil
+}
+
 func updateProjectBPM(filePath string, bpm int) error {
 	content, err := os.ReadFile(filePath)
 	if err != nil {
@@ -573,5 +686,12 @@ func launchReaper(projectPath string) error {
 	return cmd.Run()
 }
 
-// Tool is the exported symbol that the host application will look up.
-var Tool = musicProjectManagerTool{}
+func main() {
+	plugin.Serve(&plugin.ServeConfig{
+		HandshakeConfig: pluginapi.Handshake,
+		Plugins: map[string]plugin.Plugin{
+			"tool": &pluginapi.ToolRPCPlugin{Impl: &musicProjectManagerTool{}},
+		},
+		GRPCServer: plugin.DefaultGRPCServer,
+	})
+}
