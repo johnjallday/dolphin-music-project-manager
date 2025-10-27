@@ -89,22 +89,22 @@ func (m *musicProjectManagerTool) GetBuildInfo() map[string]string {
 func (m *musicProjectManagerTool) Definition() openai.FunctionDefinitionParam {
 	return openai.FunctionDefinitionParam{
 		Name:        "music_project_manager",
-		Description: openai.String("Manage music projects: create projects, open existing projects, scan for .RPP files, list existing projects, filter recent projects, and view settings"),
+		Description: openai.String("Manage Reaper DAW music projects (.RPP files). Use this for creating new music projects, opening existing Reaper projects in the DAW, opening project locations in Finder, scanning for project files, listing projects, and filtering by BPM. Examples: 'create project mash', 'open project beats', 'open beats in finder', 'show me my 140 BPM projects'"),
 		Parameters: openai.FunctionParameters{
 			"type": "object",
 			"properties": map[string]any{
 				"operation": map[string]any{
 					"type":        "string",
-					"description": "Operation to perform",
-					"enum":        []string{"create_project", "scan", "list_projects", "open_project", "filter_project"},
+					"description": "Music project operation: create new Reaper project, open existing project in Reaper DAW, reveal project in Finder file browser, scan for .RPP files, list projects, or filter by name/BPM",
+					"enum":        []string{"create_project", "scan", "list_projects", "open_project", "open_in_finder", "filter_project"},
 				},
 				"name": map[string]any{
 					"type":        "string",
-					"description": "Project name (required for create_project)",
+					"description": "Project name for creating new Reaper projects, filtering existing ones, or finding projects to open in Finder (e.g., 'mash', 'beats', 'Rich Daddy')",
 				},
 				"path": map[string]any{
 					"type":        "string",
-					"description": "Project file path (required for open_project)",
+					"description": "Full file path to a Reaper project file (.RPP) to open in Reaper DAW or reveal in Finder (e.g., '/Users/name/Music/Projects/song.RPP')",
 				},
 				"bpm": map[string]any{
 					"type":        "integer",
@@ -159,10 +159,12 @@ func (m *musicProjectManagerTool) Call(ctx context.Context, args string) (string
 		return m.listProjects()
 	case "open_project":
 		return m.openProject(params.Path)
+	case "open_in_finder":
+		return m.openInFinder(params.Path, params.Name)
 	case "filter_project":
 		return m.filterProject(params.Name, params.BPM, params.MinBPM, params.MaxBPM)
 	default:
-		return "", fmt.Errorf("unknown operation %q. Valid operations: create_project, scan, list_projects, open_project, filter_project", params.Operation)
+		return "", fmt.Errorf("unknown operation %q. Valid operations: create_project, scan, list_projects, open_project, open_in_finder, filter_project", params.Operation)
 	}
 }
 
@@ -243,6 +245,83 @@ func (m *musicProjectManagerTool) openProject(projectPath string) (string, error
 	}
 
 	return fmt.Sprintf("Opened project: %s", projectPath), nil
+}
+
+// openInFinder reveals a project file in Finder
+func (m *musicProjectManagerTool) openInFinder(projectPath, projectName string) (string, error) {
+	var targetPath string
+
+	// If path is provided, use it directly
+	if projectPath != "" {
+		targetPath = projectPath
+	} else if projectName != "" {
+		// Search for project by name
+		settings, err := m.getSettings()
+		if err != nil {
+			return "", fmt.Errorf("failed to load settings: %w", err)
+		}
+
+		if settings.ProjectDir == "" {
+			return "Music Project Manager needs to be configured. Please set project_dir in the application settings.", nil
+		}
+
+		// Look for projects.json file
+		projectsFile := filepath.Join(settings.ProjectDir, "projects.json")
+		data, err := os.ReadFile(projectsFile)
+		if err != nil {
+			return "", fmt.Errorf("projects.json not found at %s. Run 'scan' operation first", projectsFile)
+		}
+
+		// Parse the projects
+		var projects []Project
+		if err := json.Unmarshal(data, &projects); err != nil {
+			return "", fmt.Errorf("failed to parse projects.json: %w", err)
+		}
+
+		// Search for matching project (case-insensitive, substring match)
+		var matches []Project
+		searchLower := strings.ToLower(projectName)
+		for _, proj := range projects {
+			if strings.Contains(strings.ToLower(proj.Name), searchLower) {
+				matches = append(matches, proj)
+			}
+		}
+
+		if len(matches) == 0 {
+			return "", fmt.Errorf("no project found matching '%s'. Try running 'scan' to update the project list", projectName)
+		}
+
+		if len(matches) > 1 {
+			// Return list of matches if ambiguous
+			var matchNames []string
+			for _, m := range matches {
+				matchNames = append(matchNames, m.Name)
+			}
+			return "", fmt.Errorf("multiple projects found matching '%s': %s. Please be more specific", projectName, strings.Join(matchNames, ", "))
+		}
+
+		targetPath = matches[0].Path
+	} else {
+		return "", fmt.Errorf("either 'path' or 'name' must be provided")
+	}
+
+	// Check if the file exists
+	if _, err := os.Stat(targetPath); os.IsNotExist(err) {
+		return "", fmt.Errorf("project file not found: %s", targetPath)
+	}
+
+	// Check if it's a .RPP file
+	if strings.ToLower(filepath.Ext(targetPath)) != ".rpp" {
+		return "", fmt.Errorf("file must be a .RPP (Reaper project) file, got: %s", filepath.Ext(targetPath))
+	}
+
+	// Open in Finder using -R flag to reveal the file
+	cmd := exec.Command("open", "-R", targetPath)
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("failed to open in Finder: %w", err)
+	}
+
+	return fmt.Sprintf("Opened in Finder: %s", targetPath), nil
 }
 
 // scanProjects scans for .RPP files in the project directory and saves to projects.json
