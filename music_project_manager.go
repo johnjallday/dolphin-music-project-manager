@@ -16,7 +16,7 @@ import (
 	"time"
 
 	"github.com/hashicorp/go-plugin"
-	"github.com/johnjallday/dolphin-agent/pluginapi"
+	"github.com/johnjallday/ori-agent/pluginapi"
 	"github.com/openai/openai-go/v2"
 )
 
@@ -51,7 +51,9 @@ type AgentsConfig struct {
 
 // musicProjectManagerTool implements Tool for music project management.
 type musicProjectManagerTool struct {
-	getSettings func() (*Settings, error)
+	getSettings  func() (*Settings, error)
+	settings     *Settings
+	agentContext *pluginapi.AgentContext
 }
 
 // Version information set at build time via -ldflags
@@ -59,6 +61,15 @@ var (
 	Version   = "dev"
 	BuildTime = "unknown"
 	GitCommit = "unknown"
+)
+
+// Interface conformance checks
+var (
+	_ pluginapi.Tool                    = (*musicProjectManagerTool)(nil)
+	_ pluginapi.VersionedTool           = (*musicProjectManagerTool)(nil)
+	_ pluginapi.DefaultSettingsProvider = (*musicProjectManagerTool)(nil)
+	_ pluginapi.AgentAwareTool          = (*musicProjectManagerTool)(nil)
+	_ pluginapi.InitializationProvider  = (*musicProjectManagerTool)(nil)
 )
 
 func (m *musicProjectManagerTool) Version() string {
@@ -85,7 +96,7 @@ func (m *musicProjectManagerTool) Definition() openai.FunctionDefinitionParam {
 				"operation": map[string]any{
 					"type":        "string",
 					"description": "Operation to perform",
-					"enum":        []string{"create_project", "get_settings", "scan", "list_projects", "open_project", "filter_project"},
+					"enum":        []string{"create_project", "scan", "list_projects", "open_project", "filter_project"},
 				},
 				"name": map[string]any{
 					"type":        "string",
@@ -121,8 +132,9 @@ func (m *musicProjectManagerTool) Definition() openai.FunctionDefinitionParam {
 
 // Call is invoked with the function arguments and dispatches to the appropriate operation.
 func (m *musicProjectManagerTool) Call(ctx context.Context, args string) (string, error) {
+	// Initialize getSettings function if not set
 	if m.getSettings == nil {
-		m.getSettings = m.loadSettingsFromAPI
+		m.getSettings = m.loadSettings
 	}
 
 	var params struct {
@@ -141,8 +153,6 @@ func (m *musicProjectManagerTool) Call(ctx context.Context, args string) (string
 	switch params.Operation {
 	case "create_project":
 		return m.createProject(params.Name, params.BPM)
-	case "get_settings":
-		return m.getSettingsStruct()
 	case "scan":
 		return m.scanProjects()
 	case "list_projects":
@@ -152,7 +162,7 @@ func (m *musicProjectManagerTool) Call(ctx context.Context, args string) (string
 	case "filter_project":
 		return m.filterProject(params.Name, params.BPM, params.MinBPM, params.MaxBPM)
 	default:
-		return "", fmt.Errorf("unknown operation %q. Valid operations: create_project, get_settings, scan, list_projects, open_project, filter_project", params.Operation)
+		return "", fmt.Errorf("unknown operation %q. Valid operations: create_project, scan, list_projects, open_project, filter_project", params.Operation)
 	}
 }
 
@@ -312,7 +322,7 @@ func (m *musicProjectManagerTool) scanProjects() (string, error) {
 	return fmt.Sprintf("Scanning %s in the background. Use 'list_projects' to see results once complete.", projectDir), nil
 }
 
-// listProjects reads and returns the 30 most recent projects as JSON
+// listProjects reads and returns the 30 most recent projects as a structured table result
 func (m *musicProjectManagerTool) listProjects() (string, error) {
 	settings, err := m.getSettings()
 	if err != nil {
@@ -359,13 +369,34 @@ func (m *musicProjectManagerTool) listProjects() (string, error) {
 	}
 	recentProjects := projects[:limit]
 
-	// Return JSON array for frontend table rendering
-	projectsData, err := json.MarshalIndent(recentProjects, "", "  ")
-	if err != nil {
-		return "", fmt.Errorf("error marshaling projects data: %w", err)
+	// Create simplified output with only name, path, and date
+	type SimplifiedProject struct {
+		Name string  `json:"name"`
+		Path string  `json:"path"`
+		Date string  `json:"date"`
+		BPM  float64 `json:"bpm"`
 	}
 
-	return string(projectsData), nil
+	simplified := make([]SimplifiedProject, len(recentProjects))
+	for i, p := range recentProjects {
+		simplified[i] = SimplifiedProject{
+			Name: p.Name,
+			Path: p.Path,
+			Date: p.LastModified.Format("2006-01-02"),
+			BPM:  p.BPM,
+		}
+	}
+
+	// Create structured result for table display
+	result := pluginapi.NewTableResult(
+		"Recent Music Projects",
+		[]string{"Name", "Path", "Date", "BPM"},
+		simplified,
+	)
+	result.Description = fmt.Sprintf("Showing %d most recent projects", len(simplified))
+
+	// Return as JSON
+	return result.ToJSON()
 }
 
 // filterProject filters projects by name and/or BPM criteria
@@ -443,27 +474,34 @@ func (m *musicProjectManagerTool) filterProject(nameFilter string, exactBPM, min
 	}
 	recentProjects := filtered[:limit]
 
-	// Convert to JSON
-	projectsData, err := json.MarshalIndent(recentProjects, "", "  ")
-	if err != nil {
-		return "", fmt.Errorf("error marshaling filtered projects data: %w", err)
+	// Create simplified output with only name, path, and date
+	type SimplifiedProject struct {
+		Name string  `json:"name"`
+		Path string  `json:"path"`
+		Date string  `json:"date"`
+		BPM  float64 `json:"bpm"`
 	}
 
-	return fmt.Sprintf("Found %d projects matching filters, showing %d most recent:\n%s", len(filtered), limit, string(projectsData)), nil
-}
+	simplified := make([]SimplifiedProject, len(recentProjects))
+	for i, p := range recentProjects {
+		simplified[i] = SimplifiedProject{
+			Name: p.Name,
+			Path: p.Path,
+			Date: p.LastModified.Format("2006-01-02"),
+			BPM:  p.BPM,
+		}
+	}
 
-// getSettingsStruct returns the field names and types of the Settings struct
-func (m *musicProjectManagerTool) getSettingsStruct() (string, error) {
-	fieldInfo := map[string]string{
-		"default_template": "filepath",
-		"project_dir":      "filepath",
-		"template_dir":     "filepath",
-	}
-	data, err := json.Marshal(fieldInfo)
-	if err != nil {
-		return "", fmt.Errorf("failed to marshal field info: %w", err)
-	}
-	return string(data), nil
+	// Create structured result for table display
+	result := pluginapi.NewTableResult(
+		"Filtered Music Projects",
+		[]string{"Name", "Path", "Date", "BPM"},
+		simplified,
+	)
+	result.Description = fmt.Sprintf("Found %d projects matching filters, showing %d most recent", len(filtered), limit)
+
+	// Return as JSON
+	return result.ToJSON()
 }
 
 // GetDefaultSettings returns default settings as JSON (implementing pluginapi interface)
@@ -481,52 +519,93 @@ func (m *musicProjectManagerTool) GetDefaultSettings() (string, error) {
 	return string(data), nil
 }
 
-// GetSettings returns current settings as JSON (implementing settings interface)
-func (m *musicProjectManagerTool) GetSettings() (string, error) {
-	settings, err := m.getSettings()
-	if err != nil {
-		return "", err
-	}
-	data, err := json.MarshalIndent(settings, "", "  ")
-	if err != nil {
-		return "", fmt.Errorf("failed to marshal current settings: %w", err)
-	}
-	return string(data), nil
+// SetAgentContext provides the current agent information to the plugin
+func (m *musicProjectManagerTool) SetAgentContext(ctx pluginapi.AgentContext) {
+	m.agentContext = &ctx
 }
 
-// SetSettings updates the plugin settings from JSON (implementing settings interface)
-func (m *musicProjectManagerTool) SetSettings(settingsJSON string) error {
-	var newSettings Settings
-	if err := json.Unmarshal([]byte(settingsJSON), &newSettings); err != nil {
-		return fmt.Errorf("failed to unmarshal settings: %w", err)
+// InitializationProvider implementation for modern plugin configuration
+
+// GetRequiredConfig returns the configuration variables needed by this plugin
+func (m *musicProjectManagerTool) GetRequiredConfig() []pluginapi.ConfigVariable {
+	usr, _ := user.Current()
+	defaultProjectDir := filepath.Join(usr.HomeDir, "Music", "Projects")
+	defaultTemplateDir := filepath.Join(usr.HomeDir, "Library", "Application Support", "REAPER", "ProjectTemplates")
+	defaultTemplatePath := filepath.Join(defaultTemplateDir, "Default.RPP")
+
+	return []pluginapi.ConfigVariable{
+		{
+			Key:          "project_dir",
+			Name:         "Project Directory",
+			Description:  "Directory where music projects are stored",
+			Type:         pluginapi.ConfigTypeDirPath,
+			Required:     true,
+			DefaultValue: defaultProjectDir,
+			Placeholder:  defaultProjectDir,
+		},
+		{
+			Key:          "template_dir",
+			Name:         "Template Directory",
+			Description:  "Directory where REAPER project templates are stored",
+			Type:         pluginapi.ConfigTypeDirPath,
+			Required:     true,
+			DefaultValue: defaultTemplateDir,
+			Placeholder:  defaultTemplateDir,
+		},
+		{
+			Key:          "default_template",
+			Name:         "Default Template",
+			Description:  "Path to the default REAPER project template file (.RPP)",
+			Type:         pluginapi.ConfigTypeFilePath,
+			Required:     false,
+			DefaultValue: defaultTemplatePath,
+			Placeholder:  defaultTemplatePath,
+		},
+	}
+}
+
+// ValidateConfig validates the provided configuration
+func (m *musicProjectManagerTool) ValidateConfig(config map[string]interface{}) error {
+	projectDir, ok := config["project_dir"].(string)
+	if !ok || projectDir == "" {
+		return fmt.Errorf("project_dir is required")
 	}
 
-	// Get current agent from agents.json file
-	currentAgent, err := m.getCurrentAgentFromFile()
-	if err != nil {
-		return fmt.Errorf("failed to get current agent: %w", err)
+	templateDir, ok := config["template_dir"].(string)
+	if !ok || templateDir == "" {
+		return fmt.Errorf("template_dir is required")
 	}
 
-	// Ensure agents directory exists
-	agentDir := filepath.Join(".", "agents", currentAgent)
-	if err := os.MkdirAll(agentDir, 0755); err != nil {
-		return fmt.Errorf("failed to create agent directory: %w", err)
+	// default_template is optional, but if provided, validate it
+	if defaultTemplate, ok := config["default_template"].(string); ok && defaultTemplate != "" {
+		if !strings.HasSuffix(strings.ToLower(defaultTemplate), ".rpp") {
+			return fmt.Errorf("default_template must be a .RPP file")
+		}
 	}
 
-	// Save settings to agent-specific file
-	settingsPath := filepath.Join(agentDir, "music-project-manager_settings.json")
-	data, err := json.MarshalIndent(newSettings, "", "  ")
-	if err != nil {
-		return fmt.Errorf("failed to marshal settings for saving: %w", err)
+	return nil
+}
+
+// InitializeWithConfig initializes the plugin with the provided configuration
+func (m *musicProjectManagerTool) InitializeWithConfig(config map[string]interface{}) error {
+	projectDir, _ := config["project_dir"].(string)
+	templateDir, _ := config["template_dir"].(string)
+	defaultTemplate, _ := config["default_template"].(string)
+
+	// If default_template is not provided, construct it from template_dir
+	if defaultTemplate == "" {
+		defaultTemplate = filepath.Join(templateDir, "default.RPP")
 	}
 
-	if err := os.WriteFile(settingsPath, data, 0644); err != nil {
-		return fmt.Errorf("failed to write settings file: %w", err)
+	// Create Settings struct from config
+	newSettings := &Settings{
+		ProjectDir:      projectDir,
+		TemplateDir:     templateDir,
+		DefaultTemplate: defaultTemplate,
 	}
 
-	// Reset getSettings so it reloads from file on next call
-	// This ensures settings changes are picked up immediately
-	m.getSettings = nil
+	// Update in-memory settings
+	m.settings = newSettings
 
 	return nil
 }
@@ -550,8 +629,19 @@ func validateCreateProject(name string, bpm int) error {
 	return nil
 }
 
-// loadSettingsFromAPI loads settings from agent-specific settings file
-func (m *musicProjectManagerTool) loadSettingsFromAPI() (*Settings, error) {
+// loadSettings loads settings from memory or file
+func (m *musicProjectManagerTool) loadSettings() (*Settings, error) {
+	// Check if settings are already loaded in memory
+	if m.settings != nil {
+		return m.settings, nil
+	}
+
+	// Load from file
+	return m.loadSettingsFromFile()
+}
+
+// loadSettingsFromFile loads settings from agent-specific settings file
+func (m *musicProjectManagerTool) loadSettingsFromFile() (*Settings, error) {
 	// Get current agent from agents.json file
 	currentAgent, err := m.getCurrentAgentFromFile()
 	if err != nil {
