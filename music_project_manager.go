@@ -232,6 +232,12 @@ func (m *musicProjectManagerTool) createProject(name string, bpm int) (string, e
 		return "", fmt.Errorf("failed to launch Reaper: %w", err)
 	}
 
+	// Append the new project to projects.json
+	if err := m.appendProjectToJSON(dest, name, projectDirBase); err != nil {
+		// Log the error but don't fail the operation since the project was created successfully
+		log.Printf("[music-project-manager] Warning: failed to update projects.json: %v", err)
+	}
+
 	msg := fmt.Sprintf("Created and launched project: %s", dest)
 	if bpm > 0 {
 		msg += fmt.Sprintf(" (BPM %d)", bpm)
@@ -797,6 +803,59 @@ func (m *musicProjectManagerTool) getDefaultSettings() (*Settings, error) {
 		TemplateDir:     filepath.Join(usr.HomeDir, "Library", "Application Support", "REAPER", "ProjectTemplates"),
 		DefaultTemplate: filepath.Join(usr.HomeDir, "Library", "Application Support", "REAPER", "ProjectTemplates", "Default.RPP"),
 	}, nil
+}
+
+// appendProjectToJSON appends a newly created project to the projects.json file
+func (m *musicProjectManagerTool) appendProjectToJSON(projectPath, projectName, projectDirBase string) error {
+	projectsFile := filepath.Join(projectDirBase, "projects.json")
+
+	// Get file info for the new project
+	fileInfo, err := os.Stat(projectPath)
+	if err != nil {
+		return fmt.Errorf("failed to stat project file: %w", err)
+	}
+
+	// Extract BPM from the project file
+	bpm, err := extractBPMFromRPP(projectPath)
+	if err != nil {
+		log.Printf("[music-project-manager] Warning: failed to extract BPM from %s: %v", projectPath, err)
+		bpm = 0 // Use 0 as default if extraction fails
+	}
+
+	// Create the new project entry
+	newProject := Project{
+		Name:         projectName,
+		Path:         projectPath,
+		LastModified: fileInfo.ModTime(),
+		Size:         fileInfo.Size(),
+		BPM:          bpm,
+	}
+
+	// Read existing projects.json if it exists
+	var projects []Project
+	if data, err := os.ReadFile(projectsFile); err == nil {
+		// File exists, parse it
+		if err := json.Unmarshal(data, &projects); err != nil {
+			return fmt.Errorf("failed to parse existing projects.json: %w", err)
+		}
+	}
+	// If file doesn't exist or is empty, projects will be an empty slice, which is fine
+
+	// Append the new project
+	projects = append(projects, newProject)
+
+	// Write back to projects.json
+	projectsData, err := json.MarshalIndent(projects, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal projects data: %w", err)
+	}
+
+	if err := os.WriteFile(projectsFile, projectsData, 0644); err != nil {
+		return fmt.Errorf("failed to write projects.json: %w", err)
+	}
+
+	log.Printf("[music-project-manager] Successfully appended project '%s' to projects.json", projectName)
+	return nil
 }
 
 // updateProjectBPM updates the BPM in a project file
