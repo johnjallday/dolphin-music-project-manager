@@ -67,6 +67,7 @@ var (
 var (
 	_ pluginapi.Tool                    = (*musicProjectManagerTool)(nil)
 	_ pluginapi.VersionedTool           = (*musicProjectManagerTool)(nil)
+	_ pluginapi.PluginMetadata          = (*musicProjectManagerTool)(nil)
 	_ pluginapi.DefaultSettingsProvider = (*musicProjectManagerTool)(nil)
 	_ pluginapi.AgentAwareTool          = (*musicProjectManagerTool)(nil)
 	_ pluginapi.InitializationProvider  = (*musicProjectManagerTool)(nil)
@@ -74,6 +75,21 @@ var (
 
 func (m *musicProjectManagerTool) Version() string {
 	return Version
+}
+
+// MinAgentVersion returns the minimum ori-agent version required
+func (m *musicProjectManagerTool) MinAgentVersion() string {
+	return "0.0.6" // Minimum version that supports plugin metadata
+}
+
+// MaxAgentVersion returns the maximum compatible ori-agent version
+func (m *musicProjectManagerTool) MaxAgentVersion() string {
+	return "" // No maximum limit
+}
+
+// APIVersion returns the plugin API version
+func (m *musicProjectManagerTool) APIVersion() string {
+	return "v1"
 }
 
 // GetBuildInfo returns detailed build information

@@ -1,6 +1,10 @@
-# Music Project Manager Plugin
+# 🎵 Music Project Manager Plugin
 
-A standalone Go plugin for managing music projects with REAPER DAW integration.
+A standalone Go plugin for managing music projects with REAPER DAW integration for Ori Agent.
+
+![REAPER](https://img.shields.io/badge/REAPER-Compatible-ff6b35)
+![Go](https://img.shields.io/badge/Go-1.24-00add8)
+![Plugin](https://img.shields.io/badge/Plugin-Ori%20Agent-6366f1)
 
 ## Features
 
@@ -68,4 +72,8 @@ This plugin implements the following interfaces:
 
 ## License
 
-This project is part of the Dolphin Agent ecosystem.
+This project is part of the Ori Agent ecosystem.
+
+---
+
+**Made with ❤️ for the REAPER and AI community**
