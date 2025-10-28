@@ -51,7 +51,6 @@ type AgentsConfig struct {
 
 // musicProjectManagerTool implements Tool for music project management.
 type musicProjectManagerTool struct {
-	getSettings  func() (*Settings, error)
 	settings     *Settings
 	agentContext *pluginapi.AgentContext
 }
@@ -148,11 +147,6 @@ func (m *musicProjectManagerTool) Definition() openai.FunctionDefinitionParam {
 
 // Call is invoked with the function arguments and dispatches to the appropriate operation.
 func (m *musicProjectManagerTool) Call(ctx context.Context, args string) (string, error) {
-	// Initialize getSettings function if not set
-	if m.getSettings == nil {
-		m.getSettings = m.loadSettings
-	}
-
 	var params struct {
 		Operation string `json:"operation"`
 		Name      string `json:"name"`
@@ -190,7 +184,7 @@ func (m *musicProjectManagerTool) createProject(name string, bpm int) (string, e
 		return "", err
 	}
 
-	settings, err := m.getSettings()
+	settings, err := m.loadSettings()
 	if err != nil {
 		return "", fmt.Errorf("failed to load settings: %w", err)
 	}
@@ -278,7 +272,7 @@ func (m *musicProjectManagerTool) openInFinder(projectPath, projectName string) 
 		targetPath = projectPath
 	} else if projectName != "" {
 		// Search for project by name
-		settings, err := m.getSettings()
+		settings, err := m.loadSettings()
 		if err != nil {
 			return "", fmt.Errorf("failed to load settings: %w", err)
 		}
@@ -349,7 +343,7 @@ func (m *musicProjectManagerTool) openInFinder(projectPath, projectName string) 
 // scanProjects scans for .RPP files in the project directory and saves to projects.json
 // Returns immediately and runs the scan in the background
 func (m *musicProjectManagerTool) scanProjects() (string, error) {
-	settings, err := m.getSettings()
+	settings, err := m.loadSettings()
 	if err != nil {
 		return "", fmt.Errorf("failed to load settings: %w", err)
 	}
@@ -425,7 +419,7 @@ func (m *musicProjectManagerTool) scanProjects() (string, error) {
 
 // listProjects reads and returns the 30 most recent projects as a structured table result
 func (m *musicProjectManagerTool) listProjects() (string, error) {
-	settings, err := m.getSettings()
+	settings, err := m.loadSettings()
 	if err != nil {
 		return "", fmt.Errorf("failed to load settings: %w", err)
 	}
@@ -502,7 +496,7 @@ func (m *musicProjectManagerTool) listProjects() (string, error) {
 
 // filterProject filters projects by name and/or BPM criteria
 func (m *musicProjectManagerTool) filterProject(nameFilter string, exactBPM, minBPM, maxBPM int) (string, error) {
-	settings, err := m.getSettings()
+	settings, err := m.loadSettings()
 	if err != nil {
 		return "", fmt.Errorf("failed to load settings: %w", err)
 	}
