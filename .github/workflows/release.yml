@@ -14,17 +14,17 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout plugin code
-        uses: actions/checkout@v4
-        with:
-          path: music-project-manager
-          fetch-depth: 0
-
       - name: Checkout ori-agent
         uses: actions/checkout@v4
         with:
           repository: johnjallday/ori-agent
           path: ori-agent
+
+      - name: Checkout plugin code
+        uses: actions/checkout@v4
+        with:
+          path: plugins/music-project-manager
+          fetch-depth: 0
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -32,11 +32,11 @@ jobs:
           go-version: '1.24'
 
       - name: Run tests
-        working-directory: music-project-manager
+        working-directory: plugins/music-project-manager
         run: go test -short ./...
 
       - name: Build for multiple platforms
-        working-directory: music-project-manager
+        working-directory: plugins/music-project-manager
         run: |
           mkdir -p bin
 
@@ -56,7 +56,7 @@ jobs:
           GOOS=windows GOARCH=amd64 go build -o bin/music-project-manager-windows-amd64.exe .
 
       - name: Generate checksums
-        working-directory: music-project-manager
+        working-directory: plugins/music-project-manager
         run: |
           cd bin
           shasum -a 256 * > SHA256SUMS
@@ -71,11 +71,11 @@ jobs:
           prerelease: false
           generate_release_notes: true
           files: |
-            music-project-manager/bin/music-project-manager-linux-amd64
-            music-project-manager/bin/music-project-manager-linux-arm64
-            music-project-manager/bin/music-project-manager-darwin-amd64
-            music-project-manager/bin/music-project-manager-darwin-arm64
-            music-project-manager/bin/music-project-manager-windows-amd64.exe
-            music-project-manager/bin/SHA256SUMS
+            plugins/music-project-manager/bin/music-project-manager-linux-amd64
+            plugins/music-project-manager/bin/music-project-manager-linux-arm64
+            plugins/music-project-manager/bin/music-project-manager-darwin-amd64
+            plugins/music-project-manager/bin/music-project-manager-darwin-arm64
+            plugins/music-project-manager/bin/music-project-manager-windows-amd64.exe
+            plugins/music-project-manager/bin/SHA256SUMS
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

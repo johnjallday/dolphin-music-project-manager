@@ -11,26 +11,26 @@ jobs:
     name: Lint
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout plugin code
-        uses: actions/checkout@v4
-        with:
-          path: music-project-manager
-
       - name: Checkout ori-agent
         uses: actions/checkout@v4
         with:
           repository: johnjallday/ori-agent
           path: ori-agent
 
+      - name: Checkout plugin code
+        uses: actions/checkout@v4
+        with:
+          path: plugins/music-project-manager
+
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
           go-version: '1.24'
           cache: true
-          cache-dependency-path: music-project-manager/go.sum
+          cache-dependency-path: plugins/music-project-manager/go.sum
 
       - name: Run go fmt
-        working-directory: music-project-manager
+        working-directory: plugins/music-project-manager
         run: |
           if [ -n "$(gofmt -l .)" ]; then
             echo "Go code is not formatted:"
@@ -39,7 +39,7 @@ jobs:
           fi
 
       - name: Run go vet
-        working-directory: music-project-manager
+        working-directory: plugins/music-project-manager
         run: go vet ./...
 
       - name: Install golangci-lint
@@ -47,7 +47,7 @@ jobs:
           curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(go env GOPATH)/bin v1.55.2
 
       - name: Run golangci-lint
-        working-directory: music-project-manager
+        working-directory: plugins/music-project-manager
         run: golangci-lint run ./...
         continue-on-error: true
 
@@ -57,30 +57,30 @@ jobs:
     needs: lint
 
     steps:
-      - name: Checkout plugin code
-        uses: actions/checkout@v4
-        with:
-          path: music-project-manager
-
       - name: Checkout ori-agent
         uses: actions/checkout@v4
         with:
           repository: johnjallday/ori-agent
           path: ori-agent
 
+      - name: Checkout plugin code
+        uses: actions/checkout@v4
+        with:
+          path: plugins/music-project-manager
+
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
           go-version: '1.24'
           cache: true
-          cache-dependency-path: music-project-manager/go.sum
+          cache-dependency-path: plugins/music-project-manager/go.sum
 
       - name: Download dependencies
-        working-directory: music-project-manager
+        working-directory: plugins/music-project-manager
         run: go mod download
 
       - name: Run tests
-        working-directory: music-project-manager
+        working-directory: plugins/music-project-manager
         run: go test -v -short ./...
 
   plugin-test:
@@ -89,36 +89,36 @@ jobs:
     needs: lint
 
     steps:
-      - name: Checkout plugin code
-        uses: actions/checkout@v4
-        with:
-          path: music-project-manager
-
       - name: Checkout ori-agent
         uses: actions/checkout@v4
         with:
           repository: johnjallday/ori-agent
           path: ori-agent
 
+      - name: Checkout plugin code
+        uses: actions/checkout@v4
+        with:
+          path: plugins/music-project-manager
+
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
           go-version: '1.24'
           cache: true
-          cache-dependency-path: music-project-manager/go.sum
+          cache-dependency-path: plugins/music-project-manager/go.sum
 
       - name: Download dependencies
-        working-directory: music-project-manager
+        working-directory: plugins/music-project-manager
         run: go mod download
 
       - name: Build plugin binary
-        working-directory: music-project-manager
+        working-directory: plugins/music-project-manager
         run: |
           go build -o music-project-manager .
           chmod +x music-project-manager
 
       - name: Verify plugin binary
-        working-directory: music-project-manager
+        working-directory: plugins/music-project-manager
         run: |
           if [ ! -f "music-project-manager" ]; then
             echo "Plugin binary not found!"
@@ -128,7 +128,7 @@ jobs:
           ls -lh music-project-manager
 
       - name: Check plugin metadata
-        working-directory: music-project-manager
+        working-directory: plugins/music-project-manager
         run: |
           echo "Checking for plugin metadata..."
           if grep -r "VersionedTool\|MetadataProvider\|PluginCompatibility" . --include="*.go"; then
@@ -141,7 +141,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: music-project-manager-binary
-          path: music-project-manager/music-project-manager
+          path: plugins/music-project-manager/music-project-manager
           retention-days: 7
 
   build:
@@ -150,30 +150,30 @@ jobs:
     needs: [lint, plugin-test]
 
     steps:
-      - name: Checkout plugin code
-        uses: actions/checkout@v4
-        with:
-          path: music-project-manager
-
       - name: Checkout ori-agent
         uses: actions/checkout@v4
         with:
           repository: johnjallday/ori-agent
           path: ori-agent
 
+      - name: Checkout plugin code
+        uses: actions/checkout@v4
+        with:
+          path: plugins/music-project-manager
+
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
           go-version: '1.24'
           cache: true
-          cache-dependency-path: music-project-manager/go.sum
+          cache-dependency-path: plugins/music-project-manager/go.sum
 
       - name: Download dependencies
-        working-directory: music-project-manager
+        working-directory: plugins/music-project-manager
         run: go mod download
 
       - name: Build binaries
-        working-directory: music-project-manager
+        working-directory: plugins/music-project-manager
         run: |
           mkdir -p bin
 
@@ -190,7 +190,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: music-project-manager-binaries
-          path: music-project-manager/bin/
+          path: plugins/music-project-manager/bin/
           retention-days: 7
 
   security:
@@ -198,16 +198,16 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout plugin code
-        uses: actions/checkout@v4
-        with:
-          path: music-project-manager
-
       - name: Checkout ori-agent
         uses: actions/checkout@v4
         with:
           repository: johnjallday/ori-agent
           path: ori-agent
+
+      - name: Checkout plugin code
+        uses: actions/checkout@v4
+        with:
+          path: plugins/music-project-manager
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -217,7 +217,7 @@ jobs:
       - name: Run Gosec Security Scanner
         uses: securego/gosec@master
         with:
-          args: '-no-fail -fmt sarif -out results.sarif music-project-manager/...'
+          args: '-no-fail -fmt sarif -out results.sarif plugins/music-project-manager/...'
         continue-on-error: true
 
       - name: Upload SARIF file
