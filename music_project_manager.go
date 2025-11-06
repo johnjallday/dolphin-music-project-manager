@@ -66,7 +66,8 @@ var (
 var (
 	_ pluginapi.Tool                    = (*musicProjectManagerTool)(nil)
 	_ pluginapi.VersionedTool           = (*musicProjectManagerTool)(nil)
-	_ pluginapi.PluginMetadata          = (*musicProjectManagerTool)(nil)
+	_ pluginapi.PluginCompatibility     = (*musicProjectManagerTool)(nil)
+	_ pluginapi.MetadataProvider        = (*musicProjectManagerTool)(nil)
 	_ pluginapi.DefaultSettingsProvider = (*musicProjectManagerTool)(nil)
 	_ pluginapi.AgentAwareTool          = (*musicProjectManagerTool)(nil)
 	_ pluginapi.InitializationProvider  = (*musicProjectManagerTool)(nil)
@@ -100,22 +101,44 @@ func (m *musicProjectManagerTool) GetBuildInfo() map[string]string {
 	}
 }
 
+// GetMetadata returns plugin metadata (maintainers, license, repository)
+func (m *musicProjectManagerTool) GetMetadata() (*pluginapi.PluginMetadata, error) {
+	return &pluginapi.PluginMetadata{
+		Maintainers: []*pluginapi.Maintainer{
+			{
+				Name:         "John J",
+				Email:        "john@example.com",
+				Organization: "Ori Project",
+				Website:      "https://github.com/johnjallday",
+				Role:         "author",
+				Primary:      true,
+			},
+		},
+		License:    "MIT",
+		Repository: "https://github.com/johnjallday/ori-plugin-registry",
+	}, nil
+}
+
 // Definition returns the OpenAI function definition for music project management operations.
 func (m *musicProjectManagerTool) Definition() openai.FunctionDefinitionParam {
 	return openai.FunctionDefinitionParam{
 		Name:        "music_project_manager",
-		Description: openai.String("Manage Reaper DAW music projects (.RPP files). Use this for creating new music projects, opening existing Reaper projects in the DAW, opening project locations in Finder, scanning for project files, listing projects, and filtering by BPM. Examples: 'create project mash', 'open project beats', 'open beats in finder', 'show me my 140 BPM projects'"),
+		Description: openai.String("Manage Reaper DAW music projects (.RPP files). Use this for creating new music projects, opening existing Reaper projects in the DAW, opening project locations in Finder, scanning for project files, listing projects, filtering by BPM, and renaming projects. Examples: 'create project mash', 'open project beats', 'open beats in finder', 'show me my 140 BPM projects', 'rename China girl EDM to okok'"),
 		Parameters: openai.FunctionParameters{
 			"type": "object",
 			"properties": map[string]any{
 				"operation": map[string]any{
 					"type":        "string",
-					"description": "Music project operation: create new Reaper project, open existing project in Reaper DAW, reveal project in Finder file browser, scan for .RPP files, list projects, or filter by name/BPM",
-					"enum":        []string{"create_project", "scan", "list_projects", "open_project", "open_in_finder", "filter_project"},
+					"description": "Music project operation: create new Reaper project, open existing project in Reaper DAW, reveal project in Finder file browser, scan for .RPP files, list projects, filter by name/BPM, or rename an existing project",
+					"enum":        []string{"create_project", "scan", "list_projects", "open_project", "open_in_finder", "filter_project", "rename_project"},
 				},
 				"name": map[string]any{
 					"type":        "string",
-					"description": "Project name for creating new Reaper projects, filtering existing ones, or finding projects to open in Finder (e.g., 'mash', 'beats', 'Rich Daddy')",
+					"description": "Project name for creating new Reaper projects, filtering existing ones, finding projects to open in Finder, or the current name of a project to rename (e.g., 'mash', 'beats', 'Rich Daddy', 'China girl EDM')",
+				},
+				"new_name": map[string]any{
+					"type":        "string",
+					"description": "New name for the project when using rename_project operation (e.g., 'okok')",
 				},
 				"path": map[string]any{
 					"type":        "string",
@@ -150,6 +173,7 @@ func (m *musicProjectManagerTool) Call(ctx context.Context, args string) (string
 	var params struct {
 		Operation string `json:"operation"`
 		Name      string `json:"name"`
+		NewName   string `json:"new_name"`
 		Path      string `json:"path"`
 		BPM       int    `json:"bpm"`
 		MinBPM    int    `json:"min_bpm"`
@@ -173,8 +197,10 @@ func (m *musicProjectManagerTool) Call(ctx context.Context, args string) (string
 		return m.openInFinder(params.Path, params.Name)
 	case "filter_project":
 		return m.filterProject(params.Name, params.BPM, params.MinBPM, params.MaxBPM)
+	case "rename_project":
+		return m.renameProject(params.Name, params.NewName)
 	default:
-		return "", fmt.Errorf("unknown operation %q. Valid operations: create_project, scan, list_projects, open_project, open_in_finder, filter_project", params.Operation)
+		return "", fmt.Errorf("unknown operation %q. Valid operations: create_project, scan, list_projects, open_project, open_in_finder, filter_project, rename_project", params.Operation)
 	}
 }
 
@@ -597,6 +623,114 @@ func (m *musicProjectManagerTool) filterProject(nameFilter string, exactBPM, min
 
 	// Return as JSON
 	return result.ToJSON()
+}
+
+// renameProject renames a project folder, its RPP file, and updates projects.json
+func (m *musicProjectManagerTool) renameProject(oldName, newName string) (string, error) {
+	// Validate inputs
+	if oldName == "" {
+		return "", fmt.Errorf("old project name is required")
+	}
+	if newName == "" {
+		return "", fmt.Errorf("new project name is required")
+	}
+
+	// Validate new name doesn't contain invalid characters
+	if strings.ContainsAny(newName, `<>:"/\|?*`) {
+		return "", fmt.Errorf("new project name contains invalid characters. Avoid: < > : \" / \\ | ? *")
+	}
+
+	// Load settings
+	settings, err := m.loadSettings()
+	if err != nil {
+		return "", fmt.Errorf("failed to load settings: %w", err)
+	}
+
+	if settings.ProjectDir == "" {
+		return "Music Project Manager needs to be configured. Please set project_dir in the application settings.", nil
+	}
+
+	projectDir := settings.ProjectDir
+	projectsFile := filepath.Join(projectDir, "projects.json")
+
+	// Read projects.json
+	data, err := os.ReadFile(projectsFile)
+	if err != nil {
+		return "", fmt.Errorf("projects.json not found at %s. Run 'scan' operation first", projectsFile)
+	}
+
+	// Parse projects
+	var projects []Project
+	if err := json.Unmarshal(data, &projects); err != nil {
+		return "", fmt.Errorf("failed to parse projects.json: %w", err)
+	}
+
+	// Find the project to rename
+	var projectToRename *Project
+	var projectIndex int
+	searchLower := strings.ToLower(oldName)
+
+	for i, proj := range projects {
+		if strings.EqualFold(proj.Name, oldName) || strings.Contains(strings.ToLower(proj.Name), searchLower) {
+			projectToRename = &projects[i]
+			projectIndex = i
+			break
+		}
+	}
+
+	if projectToRename == nil {
+		return "", fmt.Errorf("project '%s' not found. Try running 'scan' to update the project list", oldName)
+	}
+
+	// Get old and new paths
+	oldProjectPath := projectToRename.Path
+	oldFolderPath := filepath.Dir(oldProjectPath)
+	oldRPPName := filepath.Base(oldProjectPath)
+
+	// Construct new paths
+	newFolderPath := filepath.Join(filepath.Dir(oldFolderPath), newName)
+	newRPPPath := filepath.Join(newFolderPath, newName+".RPP")
+
+	// Check if target folder already exists
+	if _, err := os.Stat(newFolderPath); err == nil {
+		return "", fmt.Errorf("a project folder named '%s' already exists", newName)
+	}
+
+	// Step 1: Rename the folder
+	if err := os.Rename(oldFolderPath, newFolderPath); err != nil {
+		return "", fmt.Errorf("failed to rename project folder from '%s' to '%s': %w", oldFolderPath, newFolderPath, err)
+	}
+
+	// Step 2: Rename the RPP file inside the renamed folder
+	tempOldRPPPath := filepath.Join(newFolderPath, oldRPPName)
+	if err := os.Rename(tempOldRPPPath, newRPPPath); err != nil {
+		// Try to rollback folder rename
+		os.Rename(newFolderPath, oldFolderPath)
+		return "", fmt.Errorf("failed to rename RPP file: %w", err)
+	}
+
+	// Step 3: Update projects.json
+	projects[projectIndex].Name = newName
+	projects[projectIndex].Path = newRPPPath
+
+	// Get new file info
+	if fileInfo, err := os.Stat(newRPPPath); err == nil {
+		projects[projectIndex].LastModified = fileInfo.ModTime()
+		projects[projectIndex].Size = fileInfo.Size()
+	}
+
+	// Write updated projects.json
+	projectsData, err := json.MarshalIndent(projects, "", "  ")
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal updated projects data: %w", err)
+	}
+
+	if err := os.WriteFile(projectsFile, projectsData, 0644); err != nil {
+		return "", fmt.Errorf("failed to write updated projects.json: %w", err)
+	}
+
+	log.Printf("[music-project-manager] Successfully renamed project from '%s' to '%s'", oldName, newName)
+	return fmt.Sprintf("Successfully renamed project from '%s' to '%s'\nOld path: %s\nNew path: %s", oldName, newName, oldProjectPath, newRPPPath), nil
 }
 
 // GetDefaultSettings returns default settings as JSON (implementing pluginapi interface)
