@@ -1,0 +1,21 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+jobs:
+  # Use shared template for plugin release
+  release:
+    name: Create Release
+    uses: ../../.github-templates/go-release.yml@main
+    with:
+      go-version: '1.24'
+      binary-name: music-project-manager
+      main-path: .
+      version-tag: ${{ github.ref_name }}
+      draft: false
+      prerelease: false
+    permissions:
+      contents: write

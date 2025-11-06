@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, master, develop ]
+  pull_request:
+    branches: [ main, master, develop ]
+
+jobs:
+  # Use shared template for linting
+  lint:
+    name: Lint
+    uses: ../../.github-templates/go-lint.yml@main
+    with:
+      go-version: '1.24'
+
+  # Use shared plugin test template
+  plugin-test:
+    name: Plugin Test
+    needs: lint
+    uses: ../../.github-templates/plugin-test.yml@main
+    with:
+      go-version: '1.24'
+      plugin-name: music-project-manager
+
+  # Use shared template for unit tests
+  test-unit:
+    name: Unit Tests
+    needs: lint
+    uses: ../../.github-templates/go-test.yml@main
+    with:
+      go-version: '1.24'
+      os: ubuntu-latest
+      test-flags: '-v -short'
+      coverage: true
+    secrets:
+      CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+
+  # Build plugin binary
+  build:
+    name: Build Plugin
+    needs: [lint, plugin-test]
+    uses: ../../.github-templates/go-build.yml@main
+    with:
+      go-version: '1.24'
+      binary-name: music-project-manager
+      main-path: .
+      platforms: linux/amd64,darwin/amd64,darwin/arm64
+      upload-artifacts: true
+
+  # Security scanning
+  security:
+    name: Security Scan
+    uses: ../../.github-templates/security-scan.yml@main
+    with:
+      go-version: '1.24'
