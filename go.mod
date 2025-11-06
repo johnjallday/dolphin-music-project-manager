@@ -10,9 +10,8 @@ require (
 	github.com/openai/openai-go/v2 v2.1.1
 )
 
-// Replace directive removed for CI/CD compatibility
-// For local development in workspace, use: go work
-// replace github.com/johnjallday/ori-agent => ../../ori-agent
+// Keep replace for now until ori-agent is published with correct module name
+replace github.com/johnjallday/ori-agent => ../../ori-agent
 
 require (
 	github.com/fatih/color v1.13.0 // indirect
