@@ -7,50 +7,166 @@ on:
     branches: [ main, master, develop ]
 
 jobs:
-  # Use shared template for linting
   lint:
     name: Lint
-    uses: ../../.github-templates/go-lint.yml@main
-    with:
-      go-version: '1.24'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-  # Use shared plugin test template
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          cache: true
+
+      - name: Run go fmt
+        run: |
+          if [ -n "$(gofmt -l .)" ]; then
+            echo "Go code is not formatted:"
+            gofmt -d .
+            exit 1
+          fi
+
+      - name: Run go vet
+        run: go vet ./...
+
+      - name: Install golangci-lint
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(go env GOPATH)/bin v1.55.2
+
+      - name: Run golangci-lint
+        run: golangci-lint run ./...
+        continue-on-error: true
+
+  test:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    needs: lint
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          cache: true
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Run tests
+        run: go test -v -short ./...
+
   plugin-test:
     name: Plugin Test
+    runs-on: ubuntu-latest
     needs: lint
-    uses: ../../.github-templates/plugin-test.yml@main
-    with:
-      go-version: '1.24'
-      plugin-name: music-project-manager
 
-  # Use shared template for unit tests
-  test-unit:
-    name: Unit Tests
-    needs: lint
-    uses: ../../.github-templates/go-test.yml@main
-    with:
-      go-version: '1.24'
-      os: ubuntu-latest
-      test-flags: '-v -short'
-      coverage: true
-    secrets:
-      CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-  # Build plugin binary
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          cache: true
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Build plugin binary
+        run: |
+          go build -o music-project-manager .
+          chmod +x music-project-manager
+
+      - name: Verify plugin binary
+        run: |
+          if [ ! -f "music-project-manager" ]; then
+            echo "Plugin binary not found!"
+            exit 1
+          fi
+          echo "Plugin binary built successfully"
+          ls -lh music-project-manager
+
+      - name: Check plugin metadata
+        run: |
+          echo "Checking for plugin metadata..."
+          if grep -r "VersionedTool\|MetadataProvider\|PluginCompatibility" . --include="*.go"; then
+            echo "Found plugin interface implementations"
+          else
+            echo "Warning: No versioning or metadata interfaces found"
+          fi
+
+      - name: Upload plugin binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: music-project-manager-binary
+          path: music-project-manager
+          retention-days: 7
+
   build:
-    name: Build Plugin
+    name: Build
+    runs-on: ubuntu-latest
     needs: [lint, plugin-test]
-    uses: ../../.github-templates/go-build.yml@main
-    with:
-      go-version: '1.24'
-      binary-name: music-project-manager
-      main-path: .
-      platforms: linux/amd64,darwin/amd64,darwin/arm64
-      upload-artifacts: true
 
-  # Security scanning
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          cache: true
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Build binaries
+        run: |
+          mkdir -p bin
+
+          # Linux AMD64
+          GOOS=linux GOARCH=amd64 go build -o bin/music-project-manager-linux-amd64 .
+
+          # macOS AMD64
+          GOOS=darwin GOARCH=amd64 go build -o bin/music-project-manager-darwin-amd64 .
+
+          # macOS ARM64
+          GOOS=darwin GOARCH=arm64 go build -o bin/music-project-manager-darwin-arm64 .
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: music-project-manager-binaries
+          path: bin/
+          retention-days: 7
+
   security:
     name: Security Scan
-    uses: ../../.github-templates/security-scan.yml@main
-    with:
-      go-version: '1.24'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+
+      - name: Run Gosec Security Scanner
+        uses: securego/gosec@master
+        with:
+          args: '-no-fail -fmt sarif -out results.sarif ./...'
+        continue-on-error: true
+
+      - name: Upload SARIF file
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: results.sarif
+        continue-on-error: true
