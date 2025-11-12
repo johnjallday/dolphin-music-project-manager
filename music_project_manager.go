@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	_ "embed"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -19,6 +20,9 @@ import (
 	"github.com/johnjallday/ori-agent/pluginapi"
 	"github.com/openai/openai-go/v2"
 )
+
+//go:embed plugin.yaml
+var configYAML string
 
 // PluginTool is the interface that plugins must implement to be used as tools.
 type PluginTool interface {
@@ -51,6 +55,7 @@ type AgentsConfig struct {
 
 // musicProjectManagerTool implements Tool for music project management.
 type musicProjectManagerTool struct {
+	config       pluginapi.PluginConfig
 	settings     *Settings
 	agentContext *pluginapi.AgentContext
 }
@@ -74,12 +79,12 @@ var (
 )
 
 func (m *musicProjectManagerTool) Version() string {
-	return Version
+	return m.config.Version
 }
 
 // MinAgentVersion returns the minimum ori-agent version required
 func (m *musicProjectManagerTool) MinAgentVersion() string {
-	return "0.0.6" // Minimum version that supports plugin metadata
+	return m.config.Requirements.MinOriVersion
 }
 
 // MaxAgentVersion returns the maximum compatible ori-agent version
@@ -103,26 +108,13 @@ func (m *musicProjectManagerTool) GetBuildInfo() map[string]string {
 
 // GetMetadata returns plugin metadata (maintainers, license, repository)
 func (m *musicProjectManagerTool) GetMetadata() (*pluginapi.PluginMetadata, error) {
-	return &pluginapi.PluginMetadata{
-		Maintainers: []*pluginapi.Maintainer{
-			{
-				Name:         "John J",
-				Email:        "john@example.com",
-				Organization: "Ori Project",
-				Website:      "https://github.com/johnjallday",
-				Role:         "author",
-				Primary:      true,
-			},
-		},
-		License:    "MIT",
-		Repository: "https://github.com/johnjallday/ori-plugin-registry",
-	}, nil
+	return m.config.ToMetadata()
 }
 
 // Definition returns the OpenAI function definition for music project management operations.
 func (m *musicProjectManagerTool) Definition() openai.FunctionDefinitionParam {
 	return openai.FunctionDefinitionParam{
-		Name:        "music_project_manager",
+		Name:        "ori-music-project-manager",
 		Description: openai.String("Manage Reaper DAW music projects (.RPP files). Use this for creating new music projects, opening existing Reaper projects in the DAW, opening project locations in Finder, scanning for project files, listing projects, filtering by BPM, and renaming projects. Examples: 'create project mash', 'open project beats', 'open beats in finder', 'show me my 140 BPM projects', 'rename China girl EDM to okok'"),
 		Parameters: openai.FunctionParameters{
 			"type": "object",
@@ -225,7 +217,7 @@ func (m *musicProjectManagerTool) createProject(name string, bpm int) (string, e
 	defaultTemplate := filepath.Join(templateDir, "default.RPP")
 	projectDir := filepath.Join(projectDirBase, name)
 
-	if err := os.MkdirAll(projectDir, 0755); err != nil {
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
 		return "", fmt.Errorf("failed to create project directory %q: %w", projectDir, err)
 	}
 
@@ -238,7 +230,7 @@ func (m *musicProjectManagerTool) createProject(name string, bpm int) (string, e
 		return "", fmt.Errorf("failed to read template file %q: %w", defaultTemplate, err)
 	}
 
-	if err := os.WriteFile(dest, data, 0644); err != nil {
+	if err := os.WriteFile(dest, data, 0o644); err != nil {
 		return "", fmt.Errorf("failed to write project file: %w", err)
 	}
 
@@ -416,7 +408,6 @@ func (m *musicProjectManagerTool) scanProjects() (string, error) {
 			}
 			return nil
 		})
-
 		if err != nil {
 			log.Printf("[music-project-manager] Error scanning directory: %v", err)
 			return
@@ -431,7 +422,7 @@ func (m *musicProjectManagerTool) scanProjects() (string, error) {
 			return
 		}
 
-		err = os.WriteFile(projectsFile, projectsData, 0644)
+		err = os.WriteFile(projectsFile, projectsData, 0o644)
 		if err != nil {
 			log.Printf("[music-project-manager] Error writing projects.json: %v", err)
 			return
@@ -725,7 +716,7 @@ func (m *musicProjectManagerTool) renameProject(oldName, newName string) (string
 		return "", fmt.Errorf("failed to marshal updated projects data: %w", err)
 	}
 
-	if err := os.WriteFile(projectsFile, projectsData, 0644); err != nil {
+	if err := os.WriteFile(projectsFile, projectsData, 0o644); err != nil {
 		return "", fmt.Errorf("failed to write updated projects.json: %w", err)
 	}
 
@@ -978,7 +969,7 @@ func (m *musicProjectManagerTool) appendProjectToJSON(projectPath, projectName, 
 		return fmt.Errorf("failed to marshal projects data: %w", err)
 	}
 
-	if err := os.WriteFile(projectsFile, projectsData, 0644); err != nil {
+	if err := os.WriteFile(projectsFile, projectsData, 0o644); err != nil {
 		return fmt.Errorf("failed to write projects.json: %w", err)
 	}
 
@@ -1047,7 +1038,7 @@ func updateProjectBPM(filePath string, bpm int) error {
 		}
 	}
 
-	return os.WriteFile(filePath, []byte(strings.Join(lines, "\n")), 0644)
+	return os.WriteFile(filePath, []byte(strings.Join(lines, "\n")), 0o644)
 }
 
 // launchReaper launches Reaper with the given project file
@@ -1059,10 +1050,13 @@ func launchReaper(projectPath string) error {
 }
 
 func main() {
+	// Parse plugin config from embedded YAML
+	config := pluginapi.ReadPluginConfig(configYAML)
+
 	plugin.Serve(&plugin.ServeConfig{
 		HandshakeConfig: pluginapi.Handshake,
 		Plugins: map[string]plugin.Plugin{
-			"tool": &pluginapi.ToolRPCPlugin{Impl: &musicProjectManagerTool{}},
+			"tool": &pluginapi.ToolRPCPlugin{Impl: &musicProjectManagerTool{config: config}},
 		},
 		GRPCServer: plugin.DefaultGRPCServer,
 	})

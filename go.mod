@@ -1,8 +1,6 @@
 module github.com/johnjallday/music_project_manager
 
-go 1.24.1
-
-toolchain go1.24.8
+go 1.25.3
 
 require (
 	github.com/hashicorp/go-plugin v1.7.0
@@ -11,9 +9,12 @@ require (
 )
 
 // Keep replace for now until ori-agent is published with correct module name
+// In GitHub Actions: ../ori-agent (checked out alongside)
+// In workspace: ../../ori-agent (workspace structure)
 replace github.com/johnjallday/ori-agent => ../../ori-agent
 
 require (
+	github.com/Masterminds/semver/v3 v3.4.0 // indirect
 	github.com/fatih/color v1.13.0 // indirect
 	github.com/golang/protobuf v1.5.4 // indirect
 	github.com/hashicorp/go-hclog v1.6.3 // indirect
