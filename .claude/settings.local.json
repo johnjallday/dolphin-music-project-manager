@@ -6,7 +6,8 @@
       "Bash(git remote add:*)",
       "Bash(go build:*)",
       "Bash(chmod:*)",
-      "Bash(./build.sh)"
+      "Bash(./build.sh)",
+      "Bash(tree:*)"
     ],
     "deny": [],
     "ask": []

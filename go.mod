@@ -5,7 +5,6 @@ go 1.25.3
 require (
 	github.com/hashicorp/go-plugin v1.7.0
 	github.com/johnjallday/ori-agent v0.0.5
-	github.com/openai/openai-go/v2 v2.1.1
 )
 
 // Keep replace for now until ori-agent is published with correct module name
@@ -22,10 +21,6 @@ require (
 	github.com/mattn/go-colorable v0.1.13 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/oklog/run v1.1.0 // indirect
-	github.com/tidwall/gjson v1.18.0 // indirect
-	github.com/tidwall/match v1.1.1 // indirect
-	github.com/tidwall/pretty v1.2.1 // indirect
-	github.com/tidwall/sjson v1.2.5 // indirect
 	golang.org/x/net v0.42.0 // indirect
 	golang.org/x/sys v0.34.0 // indirect
 	golang.org/x/text v0.27.0 // indirect

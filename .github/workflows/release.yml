@@ -23,44 +23,104 @@ jobs:
       - name: Checkout plugin code
         uses: actions/checkout@v4
         with:
-          path: plugins/music-project-manager
+          path: plugins/ori-music-project-manager
           fetch-depth: 0
 
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.24'
+          go-version: '1.25'
+
+      - name: Install yq (YAML parser)
+        run: |
+          sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
+          sudo chmod +x /usr/local/bin/yq
+
+      - name: Extract metadata from plugin.yaml
+        id: metadata
+        working-directory: plugins/ori-music-project-manager
+        run: |
+          VERSION=$(yq e '.version' plugin.yaml)
+          NAME=$(yq e '.name' plugin.yaml)
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "name=$NAME" >> $GITHUB_OUTPUT
+
+          # Extract platforms and architectures
+          PLATFORMS=$(yq e '.platforms[] | .os + ":" + (.architectures | join(","))' plugin.yaml)
+          echo "Detected platforms:"
+          echo "$PLATFORMS"
+          echo "platforms<<EOF" >> $GITHUB_OUTPUT
+          echo "$PLATFORMS" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Verify tag matches version
+        working-directory: plugins/ori-music-project-manager
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          YAML_VERSION="${{ steps.metadata.outputs.version }}"
+
+          if [ "$TAG_VERSION" != "$YAML_VERSION" ]; then
+            echo "❌ Error: Tag version ($TAG_VERSION) doesn't match plugin.yaml version ($YAML_VERSION)"
+            exit 1
+          fi
+          echo "✅ Version match confirmed: $TAG_VERSION"
 
       - name: Run tests
-        working-directory: plugins/music-project-manager
+        working-directory: plugins/ori-music-project-manager
         run: go test -short ./...
 
-      - name: Build for multiple platforms
-        working-directory: plugins/music-project-manager
+      - name: Build binaries for configured platforms
+        working-directory: plugins/ori-music-project-manager
         run: |
           mkdir -p bin
 
-          # Linux AMD64
-          GOOS=linux GOARCH=amd64 go build -o bin/music-project-manager-linux-amd64 .
+          # Read platforms from metadata step
+          PLATFORMS="${{ steps.metadata.outputs.platforms }}"
 
-          # Linux ARM64
-          GOOS=linux GOARCH=arm64 go build -o bin/music-project-manager-linux-arm64 .
+          # Build for each platform/architecture combination
+          while IFS= read -r platform; do
+            if [ -z "$platform" ]; then
+              continue
+            fi
 
-          # macOS AMD64 (Intel)
-          GOOS=darwin GOARCH=amd64 go build -o bin/music-project-manager-darwin-amd64 .
+            OS=$(echo "$platform" | cut -d: -f1)
+            ARCHS=$(echo "$platform" | cut -d: -f2)
 
-          # macOS ARM64 (Apple Silicon)
-          GOOS=darwin GOARCH=arm64 go build -o bin/music-project-manager-darwin-arm64 .
+            # Split architectures by comma
+            IFS=',' read -ra ARCH_ARRAY <<< "$ARCHS"
+            for ARCH in "${ARCH_ARRAY[@]}"; do
+              OUTPUT_NAME="ori-music-project-manager-${OS}-${ARCH}"
 
-          # Windows AMD64
-          GOOS=windows GOARCH=amd64 go build -o bin/music-project-manager-windows-amd64.exe .
+              # Add .exe extension for Windows
+              if [ "$OS" = "windows" ]; then
+                OUTPUT_NAME="${OUTPUT_NAME}.exe"
+              fi
+
+              echo "Building for $OS/$ARCH -> bin/$OUTPUT_NAME"
+              GOOS=$OS GOARCH=$ARCH go build -o "bin/$OUTPUT_NAME" .
+            done
+          done <<< "$PLATFORMS"
+
+          echo "✅ Build complete. Files created:"
+          ls -lh bin/
 
       - name: Generate checksums
-        working-directory: plugins/music-project-manager
+        working-directory: plugins/ori-music-project-manager
         run: |
           cd bin
           shasum -a 256 * > SHA256SUMS
+          echo "📦 Checksums generated:"
           cat SHA256SUMS
+
+      - name: Prepare release artifacts list
+        id: artifacts
+        working-directory: plugins/ori-music-project-manager
+        run: |
+          # Generate list of all binary files for release
+          FILES=$(find bin -type f -name "ori-music-project-manager-*" -o -name "SHA256SUMS" | sed 's|^|plugins/ori-music-project-manager/|' | tr '\n' ' ')
+          echo "files=$FILES" >> $GITHUB_OUTPUT
+          echo "📋 Release artifacts:"
+          echo "$FILES"
 
       - name: Create Release
         uses: softprops/action-gh-release@v1
@@ -70,12 +130,40 @@ jobs:
           draft: false
           prerelease: false
           generate_release_notes: true
+          body: |
+            ## 🎵 Ori Music Project Manager v${{ steps.metadata.outputs.version }}
+
+            Manage REAPER DAW music projects with ori-agent integration.
+
+            ### 📥 Installation
+
+            1. Download the binary for your platform
+            2. Make it executable: `chmod +x ori-music-project-manager-<platform>`
+            3. Move to your plugins directory
+            4. Configure in ori-agent settings
+
+            ### 🔐 Checksums (SHA256)
+
+            Verify your download integrity:
+            ```
+            $(cat plugins/ori-music-project-manager/bin/SHA256SUMS)
+            ```
+
+            **How to verify:**
+            ```bash
+            # macOS/Linux
+            shasum -a 256 -c SHA256SUMS --ignore-missing
+
+            # Or manually
+            shasum -a 256 ori-music-project-manager-<your-platform>
+            # Compare output with checksum above
+            ```
+
+            ### 📋 Supported Platforms
+
+            This release includes binaries for:
+            ${{ steps.metadata.outputs.platforms }}
           files: |
-            plugins/music-project-manager/bin/music-project-manager-linux-amd64
-            plugins/music-project-manager/bin/music-project-manager-linux-arm64
-            plugins/music-project-manager/bin/music-project-manager-darwin-amd64
-            plugins/music-project-manager/bin/music-project-manager-darwin-arm64
-            plugins/music-project-manager/bin/music-project-manager-windows-amd64.exe
-            plugins/music-project-manager/bin/SHA256SUMS
+            plugins/ori-music-project-manager/bin/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

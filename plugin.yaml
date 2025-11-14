@@ -1,17 +1,17 @@
 name: music_project_manager
-version: 0.2.1
+version: 0.0.8
 description: Manage music projects with REAPER integration - create, list, open, and organize music production projects
 license: MIT
 repository: https://github.com/johnjallday/ori-music-project-manager
 
 maintainers:
   - name: Ori Agent Team
-    email: noreply@ori-agent.dev
+    email: johnj.alldayok@ori-agent.dev
 
 platforms:
   - os: darwin
     architectures: [amd64, arm64]
 
 requirements:
-  min_ori_version: "0.0.6"
+  min_ori_version: "0.0.9"
   dependencies: []

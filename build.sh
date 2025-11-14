@@ -5,8 +5,8 @@
 
 set -e
 
-# Get version from VERSION file
-VERSION=$(cat VERSION 2>/dev/null || echo "0.0.1")
+# Get version from plugin.yaml
+VERSION=$(grep '^version:' plugin.yaml | awk '{print $2}' || echo "0.0.1")
 
 # Build timestamp
 BUILD_TIME=$(date -u '+%Y-%m-%d_%H:%M:%S_UTC')
@@ -20,9 +20,7 @@ echo "Build Time: $BUILD_TIME"
 echo "Git Commit: $GIT_COMMIT"
 
 # Build as standalone executable (RPC plugin)
-go build \
-    -ldflags "-X main.Version=$VERSION -X main.BuildTime=$BUILD_TIME -X main.GitCommit=$GIT_COMMIT" \
-    -o music-project-manager .
+go build -o ori-music-project-manager .
 
 echo "✅ Plugin built successfully: music-project-manager"
 echo "🏷️  Version $VERSION embedded in binary"
